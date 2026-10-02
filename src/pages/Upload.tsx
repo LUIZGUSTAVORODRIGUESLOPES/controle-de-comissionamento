@@ -6,7 +6,12 @@ import {
   upsertCustomerByCode,
   createBillingsBatch,
 } from '@/services/commissionService'
-import { parseCSV, parseCurrency } from '@/lib/csvParser'
+import {
+  parseSpreadsheetFile,
+  parseCurrency,
+  type ParsedClientRow,
+  type ParseResult,
+} from '@/lib/spreadsheetParser'
 import { useToast } from '@/hooks/use-toast'
 import {
   Upload as UploadIcon,
@@ -17,7 +22,10 @@ import {
   DollarSign,
   ArrowRight,
   Info,
-  HelpCircle,
+  Layers,
+  Check,
+  FileCheck2,
+  Sparkles,
 } from 'lucide-react'
 import {
   Card,
@@ -32,8 +40,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 
-const REQUIRED_HEADERS = ['ID do Cliente', 'Nome do Cliente', 'Valor Faturado']
-
 export default function Upload() {
   const navigate = useNavigate()
   const { toast } = useToast()
@@ -46,7 +52,9 @@ export default function Upload() {
   const [existingRunError, setExistingRunError] = useState<string | null>(null)
 
   const [file, setFile] = useState<File | null>(null)
-  const [parsedRows, setParsedRows] = useState<Record<string, string>[]>([])
+  const [parsing, setParsing] = useState(false)
+  const [parseResult, setParseResult] = useState<ParseResult | null>(null)
+  const [parsedRows, setParsedRows] = useState<ParsedClientRow[]>([])
   const [headerError, setHeaderError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -87,51 +95,53 @@ export default function Upload() {
     setFile(rawFile)
     setHeaderError(null)
     setParsedRows([])
+    setParseResult(null)
+    setParsing(true)
 
     try {
-      const text = await rawFile.text()
-      const rows = parseCSV(text)
+      const result = await parseSpreadsheetFile(rawFile)
+      setParseResult(result)
 
-      if (rows.length === 0) {
+      if (!result.success || result.rows.length === 0) {
+        setHeaderError(
+          result.error ||
+            'Não foi possível extrair dados válidos da planilha. Verifique se o arquivo possui colunas com código do cliente, nome e valores.',
+        )
         toast({
-          title: 'Arquivo Vazio',
-          description: 'Nenhuma linha encontrada no arquivo importado.',
+          title: 'Atenção ao analisar planilha',
+          description:
+            result.error ||
+            'Layout não reconhecido com segurança. Por favor, verifique a planilha.',
           variant: 'destructive',
         })
         return
       }
 
-      // Check required headers
-      const sample = rows[0]
-      const availableHeaders = Object.keys(sample).map((h) => h.toLowerCase())
+      setParsedRows(result.rows)
 
-      const missing: string[] = []
-      for (const req of REQUIRED_HEADERS) {
-        const found = availableHeaders.some(
-          (h) => h.includes(req.toLowerCase()) || req.toLowerCase().includes(h),
-        )
-        if (!found) {
-          missing.push(req)
-        }
+      // Suggest month if detected in spreadsheet title/header
+      if (result.suggestedMonth) {
+        setSelectedMonth(result.suggestedMonth)
+        toast({
+          title: 'Mês detectado automaticamente',
+          description: `O mês de referência foi preenchido como ${result.suggestedMonth}. Você pode alterá-lo se necessário.`,
+        })
+      } else {
+        toast({
+          title: 'Planilha Analisada com Sucesso',
+          description: `${result.stats.importedRows} clientes prontos para importação (${result.stats.ignoredEmptyValueRows} linhas sem valor ignoradas).`,
+        })
       }
-
-      if (missing.length > 0) {
-        setHeaderError(`Colunas obrigatórias ausentes no arquivo: ${missing.join(', ')}`)
-        return
-      }
-
-      setParsedRows(rows)
-      toast({
-        title: 'Planilha Carregada',
-        description: `${rows.length} registros identificados com sucesso.`,
-      })
     } catch (err: any) {
+      console.error(err)
+      setHeaderError(err.message || 'Falha ao processar arquivo.')
       toast({
         title: 'Erro ao ler arquivo',
-        description:
-          err.message || 'Formato inválido. Use .csv com separador vírgula ou ponto-e-vírgula.',
+        description: err.message || 'Formato inválido. Use .xlsx ou .csv.',
         variant: 'destructive',
       })
+    } finally {
+      setParsing(false)
     }
   }
 
@@ -149,8 +159,8 @@ export default function Upload() {
 
     if (!parsedRows || parsedRows.length === 0) {
       toast({
-        title: 'Nenhuma linha encontrada',
-        description: 'Faça o upload de uma planilha com dados antes de prosseguir.',
+        title: 'Nenhuma linha para importar',
+        description: 'Faça o upload de uma planilha com dados válidos antes de prosseguir.',
         variant: 'destructive',
       })
       return
@@ -171,23 +181,6 @@ export default function Upload() {
       // 1. Create monthly run (pending)
       const newRun = await createMonthlyRun(selectedMonth, numericGlobal)
 
-      // Find actual matching keys in rows
-      const sampleRow = parsedRows[0]
-      const codeKey =
-        Object.keys(sampleRow).find(
-          (k) => k.toLowerCase().includes('id') || k.toLowerCase().includes('codigo'),
-        ) || 'ID do Cliente'
-
-      const nameKey =
-        Object.keys(sampleRow).find(
-          (k) => k.toLowerCase().includes('nome') || k.toLowerCase().includes('cliente'),
-        ) || 'Nome do Cliente'
-
-      const amountKey =
-        Object.keys(sampleRow).find(
-          (k) => k.toLowerCase().includes('valor') || k.toLowerCase().includes('faturado'),
-        ) || 'Valor Faturado'
-
       // 2. Upsert customers and accumulate billings
       const billingsPayload: Array<{
         monthly_run_id: string
@@ -196,9 +189,9 @@ export default function Upload() {
       }> = []
 
       for (const row of parsedRows) {
-        const code = String(row[codeKey] || '').trim()
-        const name = String(row[nameKey] || '').trim()
-        const gross = parseCurrency(row[amountKey])
+        const code = row.code.trim()
+        const name = row.name.trim()
+        const gross = row.grossAmount
 
         if (!code) continue
 
@@ -219,7 +212,7 @@ export default function Upload() {
 
       toast({
         title: 'Upload Realizado com Sucesso!',
-        description: `${billingsPayload.length} clientes importados. Redirecionando para o Gatekeeper de Pendências...`,
+        description: `${billingsPayload.length} faturamentos importados. Redirecionando para o Gatekeeper de Pendências...`,
       })
 
       // 4. Redirect to /pendencies
@@ -359,12 +352,15 @@ export default function Upload() {
                   2
                 </span>
                 <span>Planilha de Faturamento por Cliente</span>
+                <span className="ml-1 inline-flex items-center gap-1 text-[11px] font-semibold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
+                  <Sparkles className="h-3 w-3" />
+                  Parser Inteligente &amp; Adaptativo
+                </span>
               </CardTitle>
               <CardDescription className="text-xs text-slate-500">
-                Colunas esperadas:{' '}
-                <code className="font-semibold text-slate-700">"ID do Cliente"</code>,{' '}
-                <code className="font-semibold text-slate-700">"Nome do Cliente"</code>,{' '}
-                <code className="font-semibold text-slate-700">"Valor Faturado"</code>
+                Suporta tabelas dinâmicas do Excel (.xlsx), relatórios gerenciais e planilhas
+                tradicionais (.csv). Detecta colunas, cabeçalhos, somas e mês de referência
+                automaticamente.
               </CardDescription>
             </div>
 
@@ -373,7 +369,7 @@ export default function Upload() {
               variant="outline"
               size="sm"
               onClick={loadSampleTemplate}
-              className="text-xs border-dashed border-teal-600 text-teal-700 hover:bg-teal-50"
+              className="text-xs border-dashed border-teal-600 text-teal-700 hover:bg-teal-50 shrink-0"
             >
               Usar Modelo de Teste
             </Button>
@@ -394,72 +390,166 @@ export default function Upload() {
               />
               <div className="flex flex-col items-center gap-3">
                 <div className="h-12 w-12 rounded-xl bg-slate-100 group-hover:bg-[#0F766E] group-hover:text-white text-slate-500 flex items-center justify-center transition-colors">
-                  <UploadIcon className="h-6 w-6" />
+                  {parsing ? (
+                    <div className="h-6 w-6 rounded-full border-2 border-[#0F766E] border-t-transparent animate-spin" />
+                  ) : (
+                    <UploadIcon className="h-6 w-6" />
+                  )}
                 </div>
                 <div>
                   <p className="font-semibold text-sm text-slate-800">
-                    {file ? file.name : 'Clique para selecionar ou arraste o arquivo aqui'}
+                    {parsing
+                      ? 'Analisando layout da planilha...'
+                      : file
+                        ? file.name
+                        : 'Clique para selecionar ou arraste o arquivo aqui'}
                   </p>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Formatos aceitos: .csv, .xlsx, .xls (até 10MB)
+                    Formatos aceitos: Excel (.xlsx, .xls) ou Texto (.csv)
                   </p>
                 </div>
               </div>
             </div>
 
             {headerError && (
-              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{headerError}</span>
+              <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2.5">
+                <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />
+                <div>
+                  <p className="font-semibold">{headerError}</p>
+                  <p className="text-rose-600 mt-0.5">
+                    Certifique-se de que o arquivo contenha ao menos uma coluna com o código do
+                    cliente (ex: C0001, CLI-10), uma coluna com o nome/razão social e uma coluna de
+                    valor faturado (ou data de competência).
+                  </p>
+                </div>
               </div>
             )}
 
-            {/* Preview of first 5 rows */}
+            {/* Resumo da Validação e Auditoria do Parser */}
+            {parseResult && parseResult.success && (
+              <div className="space-y-3 pt-2">
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                    <div className="flex items-center gap-2">
+                      <FileCheck2 className="h-4 w-4 text-[#0F766E]" />
+                      <span className="font-bold text-slate-800 text-sm">
+                        Resumo da Validação Inteligente
+                      </span>
+                    </div>
+                    {parseResult.columnsDetected && (
+                      <span className="text-[11px] text-slate-500">
+                        Colunas mapeadas:{' '}
+                        <strong className="text-slate-700">
+                          {parseResult.columnsDetected.code}
+                        </strong>{' '}
+                        (código),{' '}
+                        <strong className="text-slate-700">
+                          {parseResult.columnsDetected.name}
+                        </strong>{' '}
+                        (nome),{' '}
+                        <strong className="text-slate-700">
+                          {parseResult.columnsDetected.amount}
+                        </strong>{' '}
+                        (valor)
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-100 shadow-xs">
+                      <span className="text-slate-500 block text-[11px]">
+                        Clientes Reconhecidos
+                      </span>
+                      <span className="text-base font-bold text-slate-800 tabular-nums">
+                        {parseResult.stats.recognizedDataRows}
+                      </span>
+                    </div>
+
+                    <div className="bg-white p-2.5 rounded-lg border border-emerald-100 shadow-xs">
+                      <span className="text-emerald-700 font-medium block text-[11px]">
+                        A Importar (com valor/0)
+                      </span>
+                      <span className="text-base font-bold text-emerald-700 tabular-nums">
+                        {parseResult.stats.importedRows}
+                      </span>
+                    </div>
+
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-100 shadow-xs">
+                      <span className="text-slate-500 block text-[11px]">
+                        Linhas Ignoradas (sem valor)
+                      </span>
+                      <span className="text-base font-bold text-slate-600 tabular-nums">
+                        {parseResult.stats.ignoredEmptyValueRows}
+                      </span>
+                    </div>
+
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-100 shadow-xs">
+                      <span className="text-slate-500 block text-[11px]">
+                        Linhas Ignoradas (totais/título)
+                      </span>
+                      <span className="text-base font-bold text-slate-600 tabular-nums">
+                        {parseResult.stats.ignoredSummaryRows +
+                          parseResult.stats.ignoredHeaderOrPreRows}
+                      </span>
+                    </div>
+                  </div>
+
+                  {parseResult.stats.ignoredEmptyValueRows > 0 && (
+                    <p className="text-[11px] text-slate-500 bg-amber-50/60 border border-amber-100 p-2 rounded text-amber-900">
+                      ℹ️ {parseResult.stats.ignoredEmptyValueRows} clientes com células vazias ou
+                      traço ("—") na coluna de faturamento foram desconsiderados conforme regra de
+                      apuração. Clientes com faturamento zero (R$ 0,00) serão devidamente
+                      importados.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Preview of first 6 rows */}
             {parsedRows.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">
-                    Pré-visualização (Primeiras 5 linhas de {parsedRows.length})
+                    Pré-visualização dos Clientes ({parsedRows.length} linhas prontas)
                   </span>
                   <Badge
                     variant="outline"
                     className="text-emerald-700 border-emerald-300 bg-emerald-50"
                   >
-                    Pronto para envio
+                    Mapeado e pronto para envio
                   </Badge>
                 </div>
                 <div className="overflow-x-auto rounded-lg border border-slate-200">
                   <table className="w-full text-xs text-left">
                     <thead className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider border-b border-slate-200">
                       <tr>
-                        <th className="py-2.5 px-3">ID do Cliente</th>
-                        <th className="py-2.5 px-3">Nome do Cliente</th>
-                        <th className="py-2.5 px-3 text-right">Valor Faturado</th>
+                        <th className="py-2.5 px-3">Código do Cliente</th>
+                        <th className="py-2.5 px-3">Razão Social / Nome</th>
+                        <th className="py-2.5 px-3 text-right">Valor Faturado (R$)</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
-                      {parsedRows.slice(0, 5).map((row, idx) => {
-                        const code = row['ID do Cliente'] || row['id'] || Object.values(row)[0]
-                        const name = row['Nome do Cliente'] || row['nome'] || Object.values(row)[1]
-                        const amount = parseCurrency(
-                          row['Valor Faturado'] || row['valor'] || Object.values(row)[2],
-                        )
-                        return (
-                          <tr key={idx} className="hover:bg-slate-50">
-                            <td className="py-2 px-3 font-semibold text-slate-800">{code}</td>
-                            <td className="py-2 px-3 text-slate-600">{name}</td>
-                            <td className="py-2 px-3 text-right font-medium text-slate-800 tabular-nums">
-                              {new Intl.NumberFormat('pt-BR', {
-                                style: 'currency',
-                                currency: 'BRL',
-                              }).format(amount)}
-                            </td>
-                          </tr>
-                        )
-                      })}
+                      {parsedRows.slice(0, 6).map((row, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50">
+                          <td className="py-2 px-3 font-semibold text-slate-800">{row.code}</td>
+                          <td className="py-2 px-3 text-slate-600">{row.name}</td>
+                          <td className="py-2 px-3 text-right font-medium text-slate-800 tabular-nums">
+                            {new Intl.NumberFormat('pt-BR', {
+                              style: 'currency',
+                              currency: 'BRL',
+                            }).format(row.grossAmount)}
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
+                {parsedRows.length > 6 && (
+                  <p className="text-[11px] text-slate-400 text-center">
+                    Exibindo 6 de {parsedRows.length} registros prontos para gravação.
+                  </p>
+                )}
               </div>
             )}
           </CardContent>

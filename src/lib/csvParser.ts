@@ -1,4 +1,16 @@
 // Simple CSV parser supporting commas, semicolons, and quoted values
+// Re-export intelligent parser utilities
+export {
+  parseSpreadsheetFile,
+  analyzeAndExtractSpreadsheet,
+  rawParseCSV,
+  rawParseXLSX,
+  isBillableValue,
+  tryExtractDate,
+  type ParsedClientRow,
+  type ParseResult,
+} from './spreadsheetParser'
+
 export function parseCSV(text: string): Record<string, string>[] {
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0)
   if (lines.length < 2) return []

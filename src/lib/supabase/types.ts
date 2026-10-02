@@ -9,7 +9,275 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      billings: {
+        Row: {
+          created_at: string
+          customer_id: string
+          gross_amount: number
+          id: string
+          monthly_run_id: string
+          net_amount: number
+          tax_deductions_applied_json: Json | null
+        }
+        Insert: {
+          created_at?: string
+          customer_id: string
+          gross_amount?: number
+          id?: string
+          monthly_run_id: string
+          net_amount?: number
+          tax_deductions_applied_json?: Json | null
+        }
+        Update: {
+          created_at?: string
+          customer_id?: string
+          gross_amount?: number
+          id?: string
+          monthly_run_id?: string
+          net_amount?: number
+          tax_deductions_applied_json?: Json | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'billings_customer_id_fkey'
+            columns: ['customer_id']
+            isOneToOne: false
+            referencedRelation: 'customers'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'billings_monthly_run_id_fkey'
+            columns: ['monthly_run_id']
+            isOneToOne: false
+            referencedRelation: 'monthly_runs'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      commission_profiles: {
+        Row: {
+          created_at: string
+          default_percentage_year_1: number
+          default_percentage_year_2_plus: number
+          id: string
+          type: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          default_percentage_year_1?: number
+          default_percentage_year_2_plus?: number
+          id?: string
+          type: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          default_percentage_year_1?: number
+          default_percentage_year_2_plus?: number
+          id?: string
+          type?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'commission_profiles_user_id_fkey'
+            columns: ['user_id']
+            isOneToOne: false
+            referencedRelation: 'users'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      commissions: {
+        Row: {
+          billing_id: string
+          commission_amount: number
+          created_at: string
+          id: string
+          percentage_applied: number
+          user_id: string
+        }
+        Insert: {
+          billing_id: string
+          commission_amount?: number
+          created_at?: string
+          id?: string
+          percentage_applied?: number
+          user_id: string
+        }
+        Update: {
+          billing_id?: string
+          commission_amount?: number
+          created_at?: string
+          id?: string
+          percentage_applied?: number
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'commissions_billing_id_fkey'
+            columns: ['billing_id']
+            isOneToOne: false
+            referencedRelation: 'billings'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'commissions_user_id_fkey'
+            columns: ['user_id']
+            isOneToOne: false
+            referencedRelation: 'users'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      customer_users: {
+        Row: {
+          created_at: string
+          customer_id: string
+          id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          customer_id: string
+          id?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          customer_id?: string
+          id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'customer_users_customer_id_fkey'
+            columns: ['customer_id']
+            isOneToOne: false
+            referencedRelation: 'customers'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'customer_users_user_id_fkey'
+            columns: ['user_id']
+            isOneToOne: false
+            referencedRelation: 'users'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      customers: {
+        Row: {
+          created_at: string
+          customer_code: string
+          id: string
+          name: string
+          no_commission_flag: boolean
+          origin: string | null
+          start_date: string | null
+        }
+        Insert: {
+          created_at?: string
+          customer_code: string
+          id?: string
+          name: string
+          no_commission_flag?: boolean
+          origin?: string | null
+          start_date?: string | null
+        }
+        Update: {
+          created_at?: string
+          customer_code?: string
+          id?: string
+          name?: string
+          no_commission_flag?: boolean
+          origin?: string | null
+          start_date?: string | null
+        }
+        Relationships: []
+      }
+      monthly_runs: {
+        Row: {
+          created_at: string
+          gross_company_billing: number
+          id: string
+          month_year: string
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          gross_company_billing?: number
+          id?: string
+          month_year: string
+          status?: string
+        }
+        Update: {
+          created_at?: string
+          gross_company_billing?: number
+          id?: string
+          month_year?: string
+          status?: string
+        }
+        Relationships: []
+      }
+      tax_deductions: {
+        Row: {
+          created_at: string
+          formula_expression: string | null
+          id: string
+          is_active: boolean
+          name: string
+          type: string
+          value: number | null
+        }
+        Insert: {
+          created_at?: string
+          formula_expression?: string | null
+          id?: string
+          is_active?: boolean
+          name: string
+          type: string
+          value?: number | null
+        }
+        Update: {
+          created_at?: string
+          formula_expression?: string | null
+          id?: string
+          is_active?: boolean
+          name?: string
+          type?: string
+          value?: number | null
+        }
+        Relationships: []
+      }
+      users: {
+        Row: {
+          created_at: string
+          email: string
+          fixed_salary: number
+          id: string
+          name: string
+          role: string
+        }
+        Insert: {
+          created_at?: string
+          email: string
+          fixed_salary?: number
+          id: string
+          name: string
+          role: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          fixed_salary?: number
+          id?: string
+          name?: string
+          role?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
