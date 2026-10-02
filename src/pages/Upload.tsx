@@ -48,7 +48,8 @@ export default function Upload() {
   const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 
   const [selectedMonth, setSelectedMonth] = useState<string>(currentMonthStr)
-  const [globalBilling, setGlobalBilling] = useState<string>('500000')
+  const [globalBilling, setGlobalBilling] = useState<string>('')
+  const [detectedBilling, setDetectedBilling] = useState<number | null>(null)
   const [existingRunError, setExistingRunError] = useState<string | null>(null)
 
   const [file, setFile] = useState<File | null>(null)
@@ -96,6 +97,7 @@ export default function Upload() {
     setHeaderError(null)
     setParsedRows([])
     setParseResult(null)
+    setDetectedBilling(null)
     setParsing(true)
 
     try {
@@ -119,17 +121,44 @@ export default function Upload() {
 
       setParsedRows(result.rows)
 
+      // Detect gross company billing from summary row ("Total Geral")
+      if (result.detectedGrossTotal !== undefined && result.detectedGrossTotal > 0) {
+        setDetectedBilling(result.detectedGrossTotal)
+        setGlobalBilling(
+          new Intl.NumberFormat('pt-BR', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          }).format(result.detectedGrossTotal),
+        )
+      } else {
+        setDetectedBilling(null)
+      }
+
       // Suggest month if detected in spreadsheet title/header
       if (result.suggestedMonth) {
         setSelectedMonth(result.suggestedMonth)
         toast({
-          title: 'Mês detectado automaticamente',
-          description: `O mês de referência foi preenchido como ${result.suggestedMonth}. Você pode alterá-lo se necessário.`,
+          title: 'Planilha Analisada com Sucesso',
+          description: `Mês de referência detectado como ${result.suggestedMonth}.${
+            result.detectedGrossTotal
+              ? ` Faturamento total detectado: ${new Intl.NumberFormat('pt-BR', {
+                  style: 'currency',
+                  currency: 'BRL',
+                }).format(result.detectedGrossTotal)}.`
+              : ''
+          }`,
         })
       } else {
         toast({
           title: 'Planilha Analisada com Sucesso',
-          description: `${result.stats.importedRows} clientes prontos para importação (${result.stats.ignoredEmptyValueRows} linhas sem valor ignoradas).`,
+          description: `${result.stats.importedRows} clientes prontos para importação.${
+            result.detectedGrossTotal
+              ? ` Faturamento total: ${new Intl.NumberFormat('pt-BR', {
+                  style: 'currency',
+                  currency: 'BRL',
+                }).format(result.detectedGrossTotal)}.`
+              : ''
+          }`,
         })
       }
     } catch (err: any) {
@@ -166,11 +195,17 @@ export default function Upload() {
       return
     }
 
-    const numericGlobal = parseCurrency(globalBilling)
-    if (numericGlobal <= 0) {
+    // Priority: detected billing from file summary, fallback to manual input or sum of rows
+    const effectiveGlobalBilling =
+      detectedBilling !== null && detectedBilling > 0
+        ? detectedBilling
+        : parseCurrency(globalBilling)
+
+    if (effectiveGlobalBilling <= 0) {
       toast({
-        title: 'Faturamento Bruto Inválido',
-        description: 'Informe o faturamento bruto global da empresa no mês.',
+        title: 'Faturamento Bruto Não Informado',
+        description:
+          'Não foi possível detectar o total no arquivo e nenhum valor manual foi inserido.',
         variant: 'destructive',
       })
       return
@@ -179,7 +214,7 @@ export default function Upload() {
     setSubmitting(true)
     try {
       // 1. Create monthly run (pending)
-      const newRun = await createMonthlyRun(selectedMonth, numericGlobal)
+      const newRun = await createMonthlyRun(selectedMonth, effectiveGlobalBilling)
 
       // 2. Upsert customers and accumulate billings
       const billingsPayload: Array<{
@@ -237,7 +272,8 @@ export default function Upload() {
       'CLI-1003,BioPharma Distribuidora,72000.00\n' +
       'CLI-2005,Indústria Metalúrgica Progresso,110000.00\n' +
       'CLI-2006,Rede Supermercados Estrela,45000.00\n' +
-      'CLI-2007,InovaTech Cloud Solutions,88000.00\n'
+      'CLI-2007,InovaTech Cloud Solutions,88000.00\n' +
+      'Total Geral,,545000.00\n'
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
     const sampleFile = new File([blob], 'modelo_faturamento_comissoes.csv', { type: 'text/csv' })
@@ -289,8 +325,8 @@ export default function Upload() {
               <span>Parâmetros do Fechamento</span>
             </CardTitle>
             <CardDescription className="text-xs text-slate-500">
-              Defina o mês de apuração e a receita bruta total necessária para o cálculo das
-              fórmulas tributárias dinâmicas.
+              Defina o mês de apuração. O faturamento bruto total da empresa (GLOBAL_BILLING) é
+              extraído automaticamente do arquivo anexado.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -320,24 +356,64 @@ export default function Upload() {
                 className="text-xs font-semibold text-slate-700 uppercase tracking-wider flex items-center justify-between"
               >
                 <span>Faturamento Bruto da Empresa no Mês (GLOBAL_BILLING)</span>
+                {detectedBilling !== null && detectedBilling > 0 ? (
+                  <Badge
+                    variant="outline"
+                    className="text-emerald-700 bg-emerald-50 border-emerald-200 text-[10px] font-medium"
+                  >
+                    Detectado do Arquivo
+                  </Badge>
+                ) : (
+                  <span className="text-[10px] text-slate-400 font-normal">Automático</span>
+                )}
               </Label>
-              <div className="relative">
-                <span className="absolute left-3 top-2.5 text-sm font-semibold text-slate-400">
-                  R$
-                </span>
-                <Input
-                  id="global"
-                  type="text"
-                  required
-                  placeholder="500.000,00"
-                  value={globalBilling}
-                  onChange={(e) => setGlobalBilling(e.target.value)}
-                  className="pl-9 h-10 border-slate-200 focus-visible:ring-[#0F766E] font-medium tabular-nums"
-                />
-              </div>
+
+              {detectedBilling !== null && detectedBilling > 0 ? (
+                <div className="flex items-center justify-between h-10 px-3 rounded-md bg-emerald-50/60 border border-emerald-200">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    <span className="text-xs text-slate-600 font-medium">
+                      Detectado no arquivo:
+                    </span>
+                  </div>
+                  <span className="text-sm font-bold text-emerald-900 tabular-nums">
+                    {new Intl.NumberFormat('pt-BR', {
+                      style: 'currency',
+                      currency: 'BRL',
+                    }).format(detectedBilling)}
+                  </span>
+                </div>
+              ) : file && parseResult && parseResult.success ? (
+                /* Planilha analisada mas sem linha de total geral: exibir fallback manual */
+                <div className="space-y-1">
+                  <div className="relative">
+                    <span className="absolute left-3 top-2.5 text-sm font-semibold text-slate-400">
+                      R$
+                    </span>
+                    <Input
+                      id="global"
+                      type="text"
+                      placeholder="Ex: 500.000,00"
+                      value={globalBilling}
+                      onChange={(e) => setGlobalBilling(e.target.value)}
+                      className="pl-9 h-10 border-amber-300 focus-visible:ring-amber-500 font-medium tabular-nums bg-amber-50/30"
+                    />
+                  </div>
+                  <p className="text-[11px] text-amber-700">
+                    Nenhum "Total Geral" detectado na planilha. Insira o faturamento bruto
+                    manualmente.
+                  </p>
+                </div>
+              ) : (
+                /* Arquivo ainda não carregado */
+                <div className="flex items-center h-10 px-3 rounded-md bg-slate-50 border border-slate-200 text-xs text-slate-400 italic">
+                  Será extraído automaticamente do Total Geral da planilha
+                </div>
+              )}
+
               <p className="text-[11px] text-slate-500">
                 Alimenta a variável <code className="text-[#0F766E] font-bold">GLOBAL_BILLING</code>{' '}
-                nas deduções por fórmula matemática.
+                nas fórmulas tributárias.
               </p>
             </div>
           </CardContent>
@@ -506,12 +582,12 @@ export default function Upload() {
               </div>
             )}
 
-            {/* Preview of first 6 rows */}
+            {/* Pré-visualização completa com scroll vertical e header sticky */}
             {parsedRows.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">
-                    Pré-visualização dos Clientes ({parsedRows.length} linhas prontas)
+                    Pré-visualização dos Clientes ({parsedRows.length} linhas reconhecidas)
                   </span>
                   <Badge
                     variant="outline"
@@ -520,36 +596,36 @@ export default function Upload() {
                     Mapeado e pronto para envio
                   </Badge>
                 </div>
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="w-full text-xs text-left">
-                    <thead className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider border-b border-slate-200">
-                      <tr>
-                        <th className="py-2.5 px-3">Código do Cliente</th>
-                        <th className="py-2.5 px-3">Razão Social / Nome</th>
-                        <th className="py-2.5 px-3 text-right">Valor Faturado (R$)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {parsedRows.slice(0, 6).map((row, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50">
-                          <td className="py-2 px-3 font-semibold text-slate-800">{row.code}</td>
-                          <td className="py-2 px-3 text-slate-600">{row.name}</td>
-                          <td className="py-2 px-3 text-right font-medium text-slate-800 tabular-nums">
-                            {new Intl.NumberFormat('pt-BR', {
-                              style: 'currency',
-                              currency: 'BRL',
-                            }).format(row.grossAmount)}
-                          </td>
+                <div className="relative rounded-lg border border-slate-200 overflow-hidden shadow-xs">
+                  <div className="max-h-[360px] overflow-y-auto overflow-x-auto">
+                    <table className="w-full text-xs text-left">
+                      <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700 font-bold uppercase tracking-wider border-b border-slate-200 shadow-xs">
+                        <tr>
+                          <th className="py-2.5 px-3">Código do Cliente</th>
+                          <th className="py-2.5 px-3">Razão Social / Nome</th>
+                          <th className="py-2.5 px-3 text-right">Valor Faturado (R$)</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {parsedRows.map((row, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                            <td className="py-2 px-3 font-semibold text-slate-800">{row.code}</td>
+                            <td className="py-2 px-3 text-slate-600">{row.name}</td>
+                            <td className="py-2 px-3 text-right font-medium text-slate-800 tabular-nums">
+                              {new Intl.NumberFormat('pt-BR', {
+                                style: 'currency',
+                                currency: 'BRL',
+                              }).format(row.grossAmount)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-                {parsedRows.length > 6 && (
-                  <p className="text-[11px] text-slate-400 text-center">
-                    Exibindo 6 de {parsedRows.length} registros prontos para gravação.
-                  </p>
-                )}
+                <p className="text-[11px] text-slate-500 text-center flex items-center justify-center gap-1">
+                  <span>Exibindo todos os {parsedRows.length} registros com rolagem vertical.</span>
+                </p>
               </div>
             )}
           </CardContent>

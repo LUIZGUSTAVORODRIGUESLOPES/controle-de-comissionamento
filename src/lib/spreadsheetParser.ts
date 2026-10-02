@@ -173,6 +173,7 @@ export interface ParseResult {
     amount: string
   }
   suggestedMonth?: string // Format "YYYY-MM"
+  detectedGrossTotal?: number // Faturamento total da empresa detectado no sumário/Total Geral
   stats: {
     totalRawRows: number
     recognizedDataRows: number
@@ -575,6 +576,24 @@ export function analyzeAndExtractSpreadsheet(matrix: any[][]): ParseResult {
   stats.ignoredHeaderOrPreRows = dataStartRow
 
   const extractedRows: ParsedClientRow[] = []
+  let detectedGrossTotal: number | undefined = undefined
+
+  // Helper function to extract a numeric amount from a summary row
+  const extractAmountFromSummaryRow = (row: any[]): number | null => {
+    // 1. Try detected amountColIdx first
+    if (detectedMapping && isBillableValue(row[detectedMapping.amountColIdx])) {
+      return parseCurrency(row[detectedMapping.amountColIdx])
+    }
+    // 2. Otherwise scan other cells in the row for the first billable numeric value
+    for (let c = 0; c < row.length; c++) {
+      if (detectedMapping && c === detectedMapping.codeColIdx) continue
+      if (detectedMapping && c === detectedMapping.nameColIdx) continue
+      if (isBillableValue(row[c])) {
+        return parseCurrency(row[c])
+      }
+    }
+    return null
+  }
 
   for (let r = dataStartRow; r < matrix.length; r++) {
     const row = matrix[r]
@@ -594,9 +613,32 @@ export function analyzeAndExtractSpreadsheet(matrix: any[][]): ParseResult {
       continue
     }
 
-    // Check if code cell is a summary row ("Total Geral", "Soma", etc.)
-    if (isSummaryCell(rawCode) || isSummaryCell(rawName)) {
+    // Check if any identifying cell is a summary row ("Total Geral", "Soma", "Totais", etc.)
+    const isCodeSummary = isSummaryCell(rawCode)
+    const isNameSummary = isSummaryCell(rawName)
+    const anyCellSummary = row.some((c) => isSummaryCell(c))
+
+    if (isCodeSummary || isNameSummary || anyCellSummary) {
       stats.ignoredSummaryRows++
+      const summaryAmount = extractAmountFromSummaryRow(row)
+      if (summaryAmount !== null && summaryAmount > 0) {
+        // Prefer "Total Geral" specifically, or assign the summary total
+        const normCode = normalizeStr(rawCode)
+        const normName = normalizeStr(rawName)
+        const isGrandTotal =
+          normCode === 'total geral' ||
+          normName === 'total geral' ||
+          normCode === 'grand total' ||
+          normName === 'grand total' ||
+          row.some((cell) => {
+            const n = normalizeStr(cell)
+            return n === 'total geral' || n === 'grand total'
+          })
+
+        if (isGrandTotal || detectedGrossTotal === undefined) {
+          detectedGrossTotal = summaryAmount
+        }
+      }
       continue
     }
 
@@ -609,6 +651,10 @@ export function analyzeAndExtractSpreadsheet(matrix: any[][]): ParseResult {
       if (isBillableValue(rawAmount)) {
         // might be summary row without code
         stats.ignoredSummaryRows++
+        const summaryAmount = extractAmountFromSummaryRow(row)
+        if (summaryAmount !== null && summaryAmount > 0 && detectedGrossTotal === undefined) {
+          detectedGrossTotal = summaryAmount
+        }
       }
       continue
     }
@@ -661,6 +707,7 @@ export function analyzeAndExtractSpreadsheet(matrix: any[][]): ParseResult {
       amount: detectedMapping.amountColName,
     },
     suggestedMonth,
+    detectedGrossTotal,
     stats,
   }
 }
