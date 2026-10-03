@@ -507,6 +507,33 @@ export async function getCommissionsForRun(monthlyRunId: string): Promise<Commis
   return filtered
 }
 
+export async function getBillingsForRuns(monthlyRunIds: string[]): Promise<Billing[]> {
+  if (!monthlyRunIds || monthlyRunIds.length === 0) return []
+  const { data, error } = await db
+    .from('billings')
+    .select('*, customer:customers(*, customer_users(*, user:users(*)))')
+    .in('monthly_run_id', monthlyRunIds)
+
+  if (error) throw error
+  return (data as unknown as Billing[]) || []
+}
+
+export async function getCommissionsForRuns(monthlyRunIds: string[]): Promise<Commission[]> {
+  if (!monthlyRunIds || monthlyRunIds.length === 0) return []
+  const { data, error } = await db
+    .from('commissions')
+    .select('*, user:users(*), billing:billings(*, customer:customers(*))')
+    .order('commission_amount', { ascending: false })
+
+  if (error) throw error
+
+  const runIdSet = new Set(monthlyRunIds)
+  const filtered = ((data as unknown as Commission[]) || []).filter(
+    (c) => c.billing?.monthly_run_id && runIdSet.has(c.billing.monthly_run_id),
+  )
+  return filtered
+}
+
 // ==========================================
 // Settings: Users, Profiles, Taxes
 // ==========================================
