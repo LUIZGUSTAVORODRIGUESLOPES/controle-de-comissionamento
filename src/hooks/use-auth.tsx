@@ -1,5 +1,13 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
-import { User, Session } from '@supabase/supabase-js'
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useRef,
+  ReactNode,
+  useCallback,
+} from 'react'
+import { User, Session, AuthChangeEvent } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase/client'
 import type { AppUser } from '@/types/database'
 
@@ -28,7 +36,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [appUser, setAppUser] = useState<AppUser | null>(null)
   const [loading, setLoading] = useState(true)
 
-  const fetchProfile = async (userId: string) => {
+  // Track active fetch requests to ignore obsolete responses during rapid auth changes
+  const activeFetchUserIdRef = useRef<string | null>(null)
+  const isMountedRef = useRef(true)
+
+  const fetchProfile = useCallback(async (userId: string) => {
+    activeFetchUserIdRef.current = userId
     try {
       const { data, error } = await (supabase as any)
         .from('users')
@@ -36,77 +49,110 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         .eq('id', userId)
         .single()
 
+      if (!isMountedRef.current) return
+      // Discard if another user has taken over
+      if (activeFetchUserIdRef.current !== userId) return
+
       if (!error && data) {
         setAppUser(data as unknown as AppUser)
       } else {
         setAppUser(null)
       }
     } catch (e) {
-      console.error('Erro ao buscar perfil:', e)
+      if (!isMountedRef.current) return
+      if (activeFetchUserIdRef.current !== userId) return
+      console.error('Erro ao buscar perfil do usuário:', e)
       setAppUser(null)
     }
-  }
-
-  useEffect(() => {
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, newSession) => {
-      // FORBIDDEN: no async/await inside this callback — sync only
-      setSession(newSession)
-      setUser(newSession?.user ?? null)
-      if (!newSession?.user) {
-        setAppUser(null)
-        setLoading(false)
-      } else {
-        // Trigger profile fetch without awaiting inside callback
-        fetchProfile(newSession.user.id).finally(() => {
-          setLoading(false)
-        })
-      }
-    })
-
-    supabase.auth.getSession().then(({ data: { session: initSession } }) => {
-      setSession(initSession)
-      setUser(initSession?.user ?? null)
-      if (initSession?.user) {
-        fetchProfile(initSession.user.id).finally(() => {
-          setLoading(false)
-        })
-      } else {
-        setLoading(false)
-      }
-    })
-
-    return () => subscription.unsubscribe()
   }, [])
 
-  const refreshProfile = async () => {
+  useEffect(() => {
+    isMountedRef.current = true
+
+    // Set up auth state listener
+    // Note: It is strictly forbidden to use async/await inside the onAuthStateChange callback.
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event: AuthChangeEvent, newSession: Session | null) => {
+      if (!isMountedRef.current) return
+
+      setSession(newSession)
+      const currentUser = newSession?.user ?? null
+      setUser(currentUser)
+
+      if (!currentUser) {
+        activeFetchUserIdRef.current = null
+        setAppUser(null)
+        setLoading(false)
+        return
+      }
+
+      // Trigger profile fetch asynchronously outside callback flow
+      fetchProfile(currentUser.id).finally(() => {
+        if (isMountedRef.current) {
+          setLoading(false)
+        }
+      })
+    })
+
+    // Initial session bootstrap
+    supabase.auth.getSession().then(({ data: { session: initSession } }) => {
+      if (!isMountedRef.current) return
+
+      setSession(initSession)
+      const initUser = initSession?.user ?? null
+      setUser(initUser)
+
+      if (initUser) {
+        fetchProfile(initUser.id).finally(() => {
+          if (isMountedRef.current) {
+            setLoading(false)
+          }
+        })
+      } else {
+        setLoading(false)
+      }
+    })
+
+    return () => {
+      isMountedRef.current = false
+      activeFetchUserIdRef.current = null
+      subscription.unsubscribe()
+    }
+  }, [fetchProfile])
+
+  const refreshProfile = useCallback(async () => {
     if (user?.id) {
       await fetchProfile(user.id)
     }
-  }
+  }, [fetchProfile, user?.id])
 
-  const signUp = async (email: string, password: string) => {
+  // Native Supabase Auth delegation
+  const signUp = useCallback(async (email: string, password: string) => {
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: { emailRedirectTo: `${window.location.origin}/` },
     })
     return { error }
-  }
+  }, [])
 
-  const signIn = async (email: string, password: string) => {
+  const signIn = useCallback(async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     return { error }
-  }
+  }, [])
 
-  const signOut = async () => {
-    const { error } = await supabase.auth.signOut()
+  const signOut = useCallback(async () => {
+    // Proactively clear user state and active refs for security
+    activeFetchUserIdRef.current = null
     setAppUser(null)
     setUser(null)
     setSession(null)
+
+    // Call Supabase signOut
+    const { error } = await supabase.auth.signOut()
     return { error }
-  }
+  }, [])
 
   return (
     <AuthContext.Provider

@@ -21,6 +21,7 @@ import type {
 } from '@/types/database'
 import { evaluateTaxFormula } from '@/lib/formulaEvaluator'
 import { useToast } from '@/hooks/use-toast'
+import { UserModal } from '@/components/UserModal'
 import {
   Users,
   Percent,
@@ -88,14 +89,8 @@ export default function Settings() {
   // Users Modals & State
   const [userModalOpen, setUserModalOpen] = useState(false)
   const [editingUser, setEditingUser] = useState<AppUser | null>(null)
-  const [userName, setUserName] = useState('')
-  const [userEmail, setUserEmail] = useState('')
-  const [userPassword, setUserPassword] = useState('')
-  const [userRole, setUserRole] = useState<UserRole>('sales')
-  const [userFixedSalary, setUserFixedSalary] = useState('3500')
   const [deleteUserDialogOpen, setDeleteUserDialogOpen] = useState(false)
   const [userToDelete, setUserToDelete] = useState<AppUser | null>(null)
-  const [savingUser, setSavingUser] = useState(false)
 
   // Profiles Modals & State
   const [profileModalOpen, setProfileModalOpen] = useState(false)
@@ -163,90 +158,8 @@ export default function Settings() {
   // ==========================================
 
   const handleOpenUserModal = (u?: AppUser) => {
-    if (u) {
-      setEditingUser(u)
-      setUserName(u.name)
-      setUserEmail(u.email)
-      setUserPassword('')
-      setUserRole(u.role)
-      setUserFixedSalary(String(u.fixed_salary || 0))
-    } else {
-      setEditingUser(null)
-      setUserName('')
-      setUserEmail('')
-      setUserPassword('')
-      setUserRole('sales')
-      setUserFixedSalary('3500')
-    }
+    setEditingUser(u || null)
     setUserModalOpen(true)
-  }
-
-  const handleSaveUser = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setSavingUser(true)
-    try {
-      const salaryNum = parseFloat(userFixedSalary.replace(',', '.')) || 0
-
-      if (editingUser) {
-        // Update existing user
-        await updateUser(editingUser.id, {
-          name: userName,
-          role: userRole,
-          fixed_salary: salaryNum,
-        })
-        toast({
-          title: 'Utilizador Atualizado',
-          description: `Os dados de "${userName}" foram atualizados com sucesso.`,
-        })
-      } else {
-        // Create new auth user via Supabase Auth signup
-        if (!userPassword || userPassword.length < 6) {
-          toast({
-            title: 'Senha Obrigatória',
-            description: 'A senha do novo utilizador deve conter ao menos 6 caracteres.',
-            variant: 'destructive',
-          })
-          setSavingUser(false)
-          return
-        }
-
-        const { data: authData, error: authErr } = await supabase.auth.signUp({
-          email: userEmail.trim(),
-          password: userPassword,
-        })
-
-        if (authErr) throw authErr
-
-        if (authData.user) {
-          // Insert row in public.users table
-          const { error: insErr } = await (supabase as any).from('users').insert([
-            {
-              id: authData.user.id,
-              name: userName,
-              email: userEmail.trim(),
-              role: userRole,
-              fixed_salary: salaryNum,
-            },
-          ])
-          if (insErr) throw insErr
-        }
-        toast({
-          title: 'Utilizador Criado',
-          description: `O utilizador "${userName}" foi cadastrado com sucesso.`,
-        })
-      }
-
-      setUserModalOpen(false)
-      await loadData()
-    } catch (err: any) {
-      toast({
-        title: 'Erro ao salvar utilizador',
-        description: err.message || 'Falha na operação.',
-        variant: 'destructive',
-      })
-    } finally {
-      setSavingUser(false)
-    }
   }
 
   const handleDeleteUser = async () => {
@@ -835,125 +748,14 @@ export default function Settings() {
       </Tabs>
 
       {/* =========================================================================
-          MODAL: UTILIZADOR
+          MODAL: UTILIZADOR (Refatorado com React Hook Form + Zod + Checklist de Senha)
          ========================================================================= */}
-      <Dialog open={userModalOpen} onOpenChange={setUserModalOpen}>
-        <DialogContent className="max-w-md">
-          <form onSubmit={handleSaveUser}>
-            <DialogHeader>
-              <DialogTitle className="text-lg font-bold text-slate-900">
-                {editingUser ? 'Editar Utilizador' : 'Novo Utilizador'}
-              </DialogTitle>
-              <DialogDescription className="text-xs text-slate-500">
-                Preencha os dados do colaborador e sua remuneração fixa base.
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="space-y-4 py-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="u-name" className="text-xs font-semibold uppercase text-slate-700">
-                  Nome Completo
-                </Label>
-                <Input
-                  id="u-name"
-                  required
-                  value={userName}
-                  onChange={(e) => setUserName(e.target.value)}
-                  placeholder="Ex: Mariana Santos"
-                  className="h-10"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="u-email" className="text-xs font-semibold uppercase text-slate-700">
-                  E-mail Corporativo
-                </Label>
-                <Input
-                  id="u-email"
-                  type="email"
-                  required
-                  disabled={!!editingUser}
-                  value={userEmail}
-                  onChange={(e) => setUserEmail(e.target.value)}
-                  placeholder="mariana@empresa.com.br"
-                  className="h-10"
-                />
-              </div>
-
-              {!editingUser && (
-                <div className="space-y-1.5">
-                  <Label
-                    htmlFor="u-password"
-                    className="text-xs font-semibold uppercase text-slate-700"
-                  >
-                    Senha de Acesso
-                  </Label>
-                  <Input
-                    id="u-password"
-                    type="password"
-                    required
-                    value={userPassword}
-                    onChange={(e) => setUserPassword(e.target.value)}
-                    placeholder="Mínimo 6 caracteres"
-                    className="h-10"
-                  />
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label
-                    htmlFor="u-role"
-                    className="text-xs font-semibold uppercase text-slate-700"
-                  >
-                    Cargo / Nível
-                  </Label>
-                  <Select value={userRole} onValueChange={(val: UserRole) => setUserRole(val)}>
-                    <SelectTrigger id="u-role" className="h-10">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="admin">Administrador</SelectItem>
-                      <SelectItem value="manager">Gerente</SelectItem>
-                      <SelectItem value="sales">Vendedor</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label
-                    htmlFor="u-salary"
-                    className="text-xs font-semibold uppercase text-slate-700"
-                  >
-                    Salário Fixo Mensal (R$)
-                  </Label>
-                  <Input
-                    id="u-salary"
-                    type="text"
-                    required
-                    value={userFixedSalary}
-                    onChange={(e) => setUserFixedSalary(e.target.value)}
-                    className="h-10 tabular-nums"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setUserModalOpen(false)}>
-                Cancelar
-              </Button>
-              <Button
-                type="submit"
-                disabled={savingUser}
-                className="bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold"
-              >
-                {savingUser ? 'Gravando...' : 'Salvar Utilizador'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <UserModal
+        open={userModalOpen}
+        onOpenChange={setUserModalOpen}
+        editingUser={editingUser}
+        onSuccess={loadData}
+      />
 
       {/* CONFIRM DELETE USER */}
       <AlertDialog open={deleteUserDialogOpen} onOpenChange={setDeleteUserDialogOpen}>

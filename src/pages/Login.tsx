@@ -1,7 +1,18 @@
 import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import {
+  Percent,
+  Lock,
+  Mail,
+  AlertCircle,
+  ArrowRight,
+  CheckCircle2,
+  ShieldCheck,
+} from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
-import { Percent, Lock, Mail, AlertCircle, ArrowRight, CheckCircle2 } from 'lucide-react'
+import { loginSchema, LoginFormData } from '@/lib/auth-schemas'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -19,39 +30,45 @@ export default function Login() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  const [email, setEmail] = useState('luiz@globexmultimodal.com.br')
-  const [password, setPassword] = useState('Skip@Pass')
-  const [loading, setLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    formState: { errors, isSubmitting },
+  } = useForm<LoginFormData>({
+    resolver: zodResolver(loginSchema),
+    defaultValues: {
+      email: 'luiz@globexmultimodal.com.br',
+      password: 'Skip@Pass',
+    },
+    mode: 'onTouched',
+  })
 
   const from = (location.state as any)?.from?.pathname || '/dashboard'
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const onSubmit = async (data: LoginFormData) => {
     setErrorMessage(null)
-    setLoading(true)
 
     try {
-      const { error } = await signIn(email.trim(), password)
+      const { error } = await signIn(data.email.trim(), data.password)
       if (error) {
-        if (error.message?.includes('Invalid login credentials')) {
-          setErrorMessage('Credenciais inválidas. Verifique seu e-mail e senha.')
-        } else {
-          setErrorMessage(error.message || 'Falha ao autenticar. Tente novamente.')
-        }
+        // SEGURANÇA: Tratamento Seguro de Erros contra enumeração de e-mails.
+        // Mensagem genérica estrita conforme requisito do usuário: "Credenciais inválidas"
+        setErrorMessage('Credenciais inválidas')
       } else {
         navigate(from, { replace: true })
       }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Erro inesperado na conexão.')
-    } finally {
-      setLoading(false)
+    } catch {
+      // Falha genérica mesmo em caso de exceção de rede
+      setErrorMessage('Credenciais inválidas')
     }
   }
 
   const handleSelectDemoUser = (demoEmail: string, demoPass: string) => {
-    setEmail(demoEmail)
-    setPassword(demoPass)
+    setValue('email', demoEmail, { shouldValidate: true })
+    setValue('password', demoPass, { shouldValidate: true })
     setErrorMessage(null)
   }
 
@@ -70,17 +87,27 @@ export default function Login() {
 
         <Card className="border-slate-800 bg-white/95 backdrop-blur-md shadow-2xl">
           <CardHeader className="space-y-1 pb-4">
-            <CardTitle className="text-xl font-bold text-slate-900">Entrar no Sistema</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-xl font-bold text-slate-900">Entrar no Sistema</CardTitle>
+              <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                <ShieldCheck className="h-3 w-3" />
+                Acesso Seguro
+              </span>
+            </div>
             <CardDescription className="text-slate-500">
               Digite seu e-mail corporativo e senha para acessar o painel.
             </CardDescription>
           </CardHeader>
+
           <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
               {errorMessage && (
-                <div className="flex items-start gap-2.5 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm animate-in fade-in">
+                <div
+                  role="alert"
+                  className="flex items-start gap-2.5 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm animate-in fade-in"
+                >
                   <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600" />
-                  <span className="leading-tight">{errorMessage}</span>
+                  <span className="leading-tight font-medium">{errorMessage}</span>
                 </div>
               )}
 
@@ -96,13 +123,16 @@ export default function Login() {
                   <Input
                     id="email"
                     type="email"
-                    required
+                    autoComplete="email"
+                    disabled={isSubmitting}
                     placeholder="usuario@empresa.com.br"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    {...register('email')}
                     className="pl-9 h-10 border-slate-200 focus-visible:ring-[#0F766E]"
                   />
                 </div>
+                {errors.email && (
+                  <p className="text-xs text-rose-600 font-medium">{errors.email.message}</p>
+                )}
               </div>
 
               <div className="space-y-1.5">
@@ -119,24 +149,28 @@ export default function Login() {
                   <Input
                     id="password"
                     type="password"
-                    required
+                    autoComplete="current-password"
+                    disabled={isSubmitting}
                     placeholder="••••••••"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    {...register('password')}
                     className="pl-9 h-10 border-slate-200 focus-visible:ring-[#0F766E]"
                   />
                 </div>
+                {errors.password && (
+                  <p className="text-xs text-rose-600 font-medium">{errors.password.message}</p>
+                )}
               </div>
 
+              {/* Botão de submit com proteção contra múltiplos cliques e indicador de carregamento */}
               <Button
                 type="submit"
-                disabled={loading}
-                className="w-full h-11 bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold transition-all hover:scale-[1.01] shadow-md shadow-teal-900/20"
+                disabled={isSubmitting}
+                className="w-full h-11 bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold transition-all hover:scale-[1.01] shadow-md shadow-teal-900/20 disabled:cursor-not-allowed disabled:opacity-75"
               >
-                {loading ? (
+                {isSubmitting ? (
                   <div className="flex items-center gap-2">
                     <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Autenticando...</span>
+                    <span>Autenticando com segurança...</span>
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
@@ -155,8 +189,9 @@ export default function Login() {
             <div className="grid grid-cols-1 gap-2 w-full">
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => handleSelectDemoUser('luiz@globexmultimodal.com.br', 'Skip@Pass')}
-                className="flex items-center justify-between p-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-left transition-colors group"
+                className="flex items-center justify-between p-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-left transition-colors group disabled:opacity-50"
               >
                 <div>
                   <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
@@ -172,8 +207,9 @@ export default function Login() {
 
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => handleSelectDemoUser('carlos.gerente@empresa.com', 'Skip@Pass')}
-                className="flex items-center justify-between p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-left transition-colors"
+                className="flex items-center justify-between p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-left transition-colors disabled:opacity-50"
               >
                 <div>
                   <div className="text-xs font-bold text-slate-800">Carlos Silva (Gerente)</div>
@@ -186,8 +222,9 @@ export default function Login() {
 
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => handleSelectDemoUser('mariana.vendas@empresa.com', 'Skip@Pass')}
-                className="flex items-center justify-between p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-left transition-colors"
+                className="flex items-center justify-between p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-left transition-colors disabled:opacity-50"
               >
                 <div>
                   <div className="text-xs font-bold text-slate-800">
