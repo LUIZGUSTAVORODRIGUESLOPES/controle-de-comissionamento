@@ -52,7 +52,10 @@ export const strongPasswordSchema = z
 
 export const loginSchema = z.object({
   email: z.string().min(1, 'Informe seu e-mail corporativo').email('Formato de e-mail inválido'),
-  password: z.string().min(1, 'Informe sua senha'),
+  password: z
+    .string()
+    .min(1, 'Informe sua senha')
+    .min(6, 'A senha deve conter no mínimo 6 caracteres'),
 })
 
 export type LoginFormData = z.infer<typeof loginSchema>
@@ -66,7 +69,7 @@ export const createUserSchema = z.object({
     .email('Formato de e-mail inválido'),
   password: strongPasswordSchema,
   role: z.enum(['admin', 'manager', 'sales'], {
-    errorMap: () => ({ message: 'Selecione um cargo válido' }),
+    message: 'Selecione um cargo válido',
   }),
   fixedSalary: z
     .string()
@@ -90,7 +93,7 @@ export const editUserSchema = z.object({
     .min(1, 'E-mail corporativo é obrigatório')
     .email('Formato de e-mail inválido'),
   role: z.enum(['admin', 'manager', 'sales'], {
-    errorMap: () => ({ message: 'Selecione um cargo válido' }),
+    message: 'Selecione um cargo válido',
   }),
   fixedSalary: z
     .string()

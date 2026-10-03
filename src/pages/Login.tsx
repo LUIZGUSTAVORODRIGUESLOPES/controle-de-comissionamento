@@ -10,12 +10,12 @@ import {
   ArrowRight,
   CheckCircle2,
   ShieldCheck,
+  Building2,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
 import { loginSchema, LoginFormData } from '@/lib/auth-schemas'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import {
   Card,
   CardContent,
@@ -24,6 +24,14 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
 
 export default function Login() {
   const { signIn } = useAuth()
@@ -32,12 +40,7 @@ export default function Login() {
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
-  const {
-    register,
-    handleSubmit,
-    setValue,
-    formState: { errors, isSubmitting },
-  } = useForm<LoginFormData>({
+  const form = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
       email: 'luiz@globexmultimodal.com.br',
@@ -46,6 +49,7 @@ export default function Login() {
     mode: 'onTouched',
   })
 
+  const { isSubmitting } = form.formState
   const from = (location.state as any)?.from?.pathname || '/dashboard'
 
   const onSubmit = async (data: LoginFormData) => {
@@ -54,21 +58,22 @@ export default function Login() {
     try {
       const { error } = await signIn(data.email.trim(), data.password)
       if (error) {
-        // SEGURANÇA: Tratamento Seguro de Erros contra enumeração de e-mails.
-        // Mensagem genérica estrita conforme requisito do usuário: "Credenciais inválidas"
-        setErrorMessage('Credenciais inválidas')
+        // SEGURANÇA B2B: Prevenção de Enumeração de Usuários.
+        // Mensagem genérica estrita conforme requisito do usuário:
+        // "E-mail ou palavra-passe inválidos"
+        setErrorMessage('E-mail ou palavra-passe inválidos')
       } else {
         navigate(from, { replace: true })
       }
     } catch {
-      // Falha genérica mesmo em caso de exceção de rede
-      setErrorMessage('Credenciais inválidas')
+      // Falha genérica mesmo em caso de exceção de rede ou timeout
+      setErrorMessage('E-mail ou palavra-passe inválidos')
     }
   }
 
   const handleSelectDemoUser = (demoEmail: string, demoPass: string) => {
-    setValue('email', demoEmail, { shouldValidate: true })
-    setValue('password', demoPass, { shouldValidate: true })
+    form.setValue('email', demoEmail, { shouldValidate: true })
+    form.setValue('password', demoPass, { shouldValidate: true })
     setErrorMessage(null)
   }
 
@@ -100,86 +105,99 @@ export default function Login() {
           </CardHeader>
 
           <CardContent>
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-              {errorMessage && (
-                <div
-                  role="alert"
-                  className="flex items-start gap-2.5 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm animate-in fade-in"
-                >
-                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600" />
-                  <span className="leading-tight font-medium">{errorMessage}</span>
-                </div>
-              )}
-
-              <div className="space-y-1.5">
-                <Label
-                  htmlFor="email"
-                  className="text-xs font-semibold text-slate-700 uppercase tracking-wider"
-                >
-                  E-mail Corporativo
-                </Label>
-                <div className="relative">
-                  <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
-                  <Input
-                    id="email"
-                    type="email"
-                    autoComplete="email"
-                    disabled={isSubmitting}
-                    placeholder="usuario@empresa.com.br"
-                    {...register('email')}
-                    className="pl-9 h-10 border-slate-200 focus-visible:ring-[#0F766E]"
-                  />
-                </div>
-                {errors.email && (
-                  <p className="text-xs text-rose-600 font-medium">{errors.email.message}</p>
-                )}
-              </div>
-
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <Label
-                    htmlFor="password"
-                    className="text-xs font-semibold text-slate-700 uppercase tracking-wider"
+            <Form {...form}>
+              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
+                {errorMessage && (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2.5 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm animate-in fade-in"
                   >
-                    Senha
-                  </Label>
-                </div>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
-                  <Input
-                    id="password"
-                    type="password"
-                    autoComplete="current-password"
-                    disabled={isSubmitting}
-                    placeholder="••••••••"
-                    {...register('password')}
-                    className="pl-9 h-10 border-slate-200 focus-visible:ring-[#0F766E]"
-                  />
-                </div>
-                {errors.password && (
-                  <p className="text-xs text-rose-600 font-medium">{errors.password.message}</p>
+                    <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600" />
+                    <span className="leading-tight font-medium">{errorMessage}</span>
+                  </div>
                 )}
-              </div>
 
-              {/* Botão de submit com proteção contra múltiplos cliques e indicador de carregamento */}
-              <Button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full h-11 bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold transition-all hover:scale-[1.01] shadow-md shadow-teal-900/20 disabled:cursor-not-allowed disabled:opacity-75"
-              >
-                {isSubmitting ? (
-                  <div className="flex items-center gap-2">
-                    <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Autenticando com segurança...</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <span>Entrar</span>
-                    <ArrowRight className="h-4 w-4" />
-                  </div>
-                )}
-              </Button>
-            </form>
+                <FormField
+                  control={form.control}
+                  name="email"
+                  render={({ field }) => (
+                    <FormItem className="space-y-1.5">
+                      <FormLabel className="text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                        E-mail Corporativo
+                      </FormLabel>
+                      <FormControl>
+                        <div className="relative">
+                          <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                          <Input
+                            type="email"
+                            autoComplete="email"
+                            disabled={isSubmitting}
+                            placeholder="usuario@empresa.com.br"
+                            className="pl-9 h-10 border-slate-200 focus-visible:ring-[#0F766E]"
+                            {...field}
+                          />
+                        </div>
+                      </FormControl>
+                      <FormMessage className="text-xs text-rose-600 font-medium" />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="password"
+                  render={({ field }) => (
+                    <FormItem className="space-y-1.5">
+                      <FormLabel className="text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                        Palavra-passe
+                      </FormLabel>
+                      <FormControl>
+                        <div className="relative">
+                          <Lock className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                          <Input
+                            type="password"
+                            autoComplete="current-password"
+                            disabled={isSubmitting}
+                            placeholder="••••••••"
+                            className="pl-9 h-10 border-slate-200 focus-visible:ring-[#0F766E]"
+                            {...field}
+                          />
+                        </div>
+                      </FormControl>
+                      <FormMessage className="text-xs text-rose-600 font-medium" />
+                    </FormItem>
+                  )}
+                />
+
+                {/* Aviso B2B de acesso restrito (sem cadastro público) */}
+                <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200/80 text-[11px] text-slate-600 flex items-start gap-2">
+                  <Building2 className="h-3.5 w-3.5 text-[#0F766E] shrink-0 mt-0.5" />
+                  <span>
+                    Acesso exclusivo para colaboradores convidados pelo Administrador. Não é
+                    permitido cadastro público.
+                  </span>
+                </div>
+
+                {/* Botão de submit com proteção contra múltiplos cliques e spinner */}
+                <Button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full h-11 bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold transition-all hover:scale-[1.01] shadow-md shadow-teal-900/20 disabled:cursor-not-allowed disabled:opacity-75"
+                >
+                  {isSubmitting ? (
+                    <div className="flex items-center gap-2">
+                      <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Autenticando com segurança...</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span>Entrar</span>
+                      <ArrowRight className="h-4 w-4" />
+                    </div>
+                  )}
+                </Button>
+              </form>
+            </Form>
           </CardContent>
 
           <CardFooter className="flex flex-col border-t border-slate-100 bg-slate-50/70 p-4 rounded-b-xl gap-3">

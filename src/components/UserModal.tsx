@@ -12,6 +12,7 @@ import { PasswordStrengthChecklist } from '@/components/PasswordStrengthChecklis
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
+import { ShieldCheck } from 'lucide-react'
 import {
   Select,
   SelectContent,
@@ -95,31 +96,62 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
     const salaryNum = parseFloat(data.fixedSalary.replace(/\./g, '').replace(',', '.')) || 0
 
     try {
-      // 1. Delegação nativa ao Supabase Auth via signUp
-      const { data: authData, error: authErr } = await supabase.auth.signUp({
-        email: data.email.trim(),
-        password: data.password,
-      })
+      let created = false
+      let creationNote = ''
 
-      if (authErr) throw authErr
-
-      if (authData.user) {
-        // 2. Inserção na tabela pública de perfis users
-        const { error: insErr } = await (supabase as any).from('users').insert([
-          {
-            id: authData.user.id,
-            name: data.name.trim(),
+      // Tenta prioritariamente via Edge Function administrativa segura (Service Role no backend)
+      try {
+        const { data: edgeData, error: edgeErr } = await supabase.functions.invoke('create-user', {
+          body: {
             email: data.email.trim(),
+            password: data.password,
+            name: data.name.trim(),
             role: data.role,
             fixed_salary: salaryNum,
           },
-        ])
-        if (insErr) throw insErr
+        })
+
+        if (!edgeErr && edgeData && !edgeData.error) {
+          created = true
+          creationNote = 'Cadastro concluído e ativo para login imediato.'
+        } else if (edgeData?.error) {
+          console.warn('Edge function create-user reportou:', edgeData.error)
+        }
+      } catch (invokeErr) {
+        console.warn('Edge function invoke falhou, tentando fallback:', invokeErr)
+      }
+
+      // Se a Edge Function não estiver ativa ou falhar, fallback gracioso:
+      // Inicia fluxo de signUp e inserção no perfil público
+      if (!created) {
+        const { data: authData, error: authErr } = await supabase.auth.signUp({
+          email: data.email.trim(),
+          password: data.password,
+        })
+
+        if (!authErr && authData.user) {
+          const { error: insErr } = await (supabase as any).from('users').insert([
+            {
+              id: authData.user.id,
+              name: data.name.trim(),
+              email: data.email.trim(),
+              role: data.role,
+              fixed_salary: salaryNum,
+            },
+          ])
+          if (insErr) throw insErr
+          created = true
+          creationNote = 'Colaborador cadastrado no sistema.'
+        } else if (authErr) {
+          // Se o signUp estiver bloqueado por configuração de projeto Supabase fechado,
+          // ainda assim gravamos ou instruímos o administrador sobre o convite
+          throw authErr
+        }
       }
 
       toast({
-        title: 'Utilizador Criado',
-        description: `O utilizador "${data.name}" foi cadastrado com sucesso e credenciais seguras.`,
+        title: 'Utilizador Cadastrado',
+        description: `O utilizador "${data.name}" foi registrado com sucesso. ${creationNote}`,
       })
 
       onOpenChange(false)
@@ -127,7 +159,9 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
     } catch (err: any) {
       toast({
         title: 'Erro ao cadastrar utilizador',
-        description: err.message || 'Falha ao salvar no banco de dados.',
+        description:
+          err.message ||
+          'Falha na criação. Se o cadastro público estiver bloqueado no Supabase, convide o utilizador pelo painel Auth ou contate o suporte.',
         variant: 'destructive',
       })
     }
@@ -358,6 +392,14 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
 
               {/* Checklist com indicadores em tempo real */}
               <PasswordStrengthChecklist password={watchedPassword || ''} />
+
+              <div className="p-2.5 rounded-lg bg-teal-50/70 border border-teal-200/70 text-[11px] text-teal-900 flex items-start gap-2">
+                <ShieldCheck className="h-4 w-4 text-[#0F766E] shrink-0 mt-0.5" />
+                <span>
+                  <strong>Acesso Restrito B2B:</strong> O cadastro público está desativado. Somente
+                  Administradores podem registrar novos colaboradores neste painel.
+                </span>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
