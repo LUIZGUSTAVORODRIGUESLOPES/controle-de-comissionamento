@@ -6,7 +6,19 @@ import {
   getBillingsForRun,
   getCommissionsForRun,
   getAllUsers,
+  deleteMonthlyRun,
 } from '@/services/commissionService'
+import { toast as sonnerToast } from 'sonner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import type { MonthlyRun, Billing, Commission, AppUser } from '@/types/database'
 import {
   TrendingUp,
@@ -22,6 +34,8 @@ import {
   Clock,
   ExternalLink,
   Lock,
+  Trash2,
+  Loader2,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -50,37 +64,88 @@ export default function Dashboard() {
   const [commissions, setCommissions] = useState<Commission[]>([])
   const [allUsersList, setAllUsersList] = useState<AppUser[]>([])
 
+  // Deletion state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [runToDelete, setRunToDelete] = useState<MonthlyRun | null>(null)
+  const [deletingRun, setDeletingRun] = useState(false)
+
   const isSales = appUser?.role === 'sales'
 
-  useEffect(() => {
-    async function loadDashboardData() {
-      setLoading(true)
-      try {
-        const [runsData, usersData] = await Promise.all([getMonthlyRuns(), getAllUsers()])
+  const loadDashboardData = async () => {
+    setLoading(true)
+    try {
+      const [runsData, usersData] = await Promise.all([getMonthlyRuns(), getAllUsers()])
 
-        setRuns(runsData)
-        setAllUsersList(usersData)
+      setRuns(runsData)
+      setAllUsersList(usersData)
 
-        if (runsData.length > 0) {
-          const latest = runsData[0]
-          setSelectedRun(latest)
+      if (runsData.length > 0) {
+        const latest = runsData[0]
+        setSelectedRun(latest)
 
-          const [bills, comms] = await Promise.all([
-            getBillingsForRun(latest.id),
-            getCommissionsForRun(latest.id),
-          ])
-          setBillings(bills)
-          setCommissions(comms)
-        }
-      } catch (err) {
-        console.error('Erro ao carregar dados do dashboard:', err)
-      } finally {
-        setLoading(false)
+        const [bills, comms] = await Promise.all([
+          getBillingsForRun(latest.id),
+          getCommissionsForRun(latest.id),
+        ])
+        setBillings(bills)
+        setCommissions(comms)
+      } else {
+        setSelectedRun(null)
+        setBillings([])
+        setCommissions([])
       }
+    } catch (err) {
+      console.error('Erro ao carregar dados do dashboard:', err)
+    } finally {
+      setLoading(false)
     }
+  }
 
+  useEffect(() => {
     loadDashboardData()
   }, [])
+
+  const handleOpenDelete = (run: MonthlyRun) => {
+    if (run.status === 'paid') {
+      sonnerToast.error('Operação bloqueada: Não é permitido excluir uma competência fechada/paga.')
+      return
+    }
+    setRunToDelete(run)
+    setDeleteDialogOpen(true)
+  }
+
+  const handleConfirmDelete = async () => {
+    if (!runToDelete) return
+    if (runToDelete.status === 'paid') {
+      sonnerToast.error('Operação bloqueada: Não é permitido excluir uma competência fechada/paga.')
+      setDeleteDialogOpen(false)
+      return
+    }
+
+    setDeletingRun(true)
+    const tId = sonnerToast.loading(
+      `Excluindo competência de ${formatMonth(runToDelete.month_year)}...`,
+    )
+
+    try {
+      await deleteMonthlyRun(runToDelete.id)
+      sonnerToast.success('Mês e faturamentos excluídos com sucesso!', {
+        id: tId,
+        description: `A competência de ${formatMonth(runToDelete.month_year)} foi removida permanentemente.`,
+      })
+      setDeleteDialogOpen(false)
+      setRunToDelete(null)
+      await loadDashboardData()
+    } catch (err: any) {
+      console.error('Erro ao excluir competência:', err)
+      sonnerToast.error('Erro ao excluir competência', {
+        id: tId,
+        description: err.message || 'Falha ao apagar dados da competência.',
+      })
+    } finally {
+      setDeletingRun(false)
+    }
+  }
 
   const formatBRL = (val: number) => {
     return new Intl.NumberFormat('pt-BR', {
@@ -424,26 +489,53 @@ export default function Dashboard() {
                           )}
                         </td>
                         <td className="py-3.5 px-4 text-right">
-                          {isPending ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => navigate('/pendencies')}
-                              className="text-xs text-amber-700 border-amber-300 hover:bg-amber-50"
-                            >
-                              Resolver Pendências
-                            </Button>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => navigate('/reports')}
-                              className="text-xs text-[#0F766E] hover:text-[#115E59] hover:bg-teal-50 gap-1 font-semibold"
-                            >
-                              <span>Ver Relatório</span>
-                              <ArrowRight className="h-3.5 w-3.5" />
-                            </Button>
-                          )}
+                          <div className="flex items-center justify-end gap-1.5">
+                            {isPending ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => navigate('/pendencies')}
+                                className="text-xs text-amber-700 border-amber-300 hover:bg-amber-50"
+                              >
+                                Resolver Pendências
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => navigate('/reports')}
+                                className="text-xs text-[#0F766E] hover:text-[#115E59] hover:bg-teal-50 gap-1 font-semibold"
+                              >
+                                <span>Ver Relatório</span>
+                                <ArrowRight className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+
+                            {/* Botão de Excluir Run (oculto para vendas e desabilitado/oculto se paid) */}
+                            {!isSales && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                disabled={r.status === 'paid'}
+                                onClick={() => handleOpenDelete(r)}
+                                className={`text-xs px-2 h-8 flex items-center gap-1 ${
+                                  r.status === 'paid'
+                                    ? 'text-slate-300 cursor-not-allowed opacity-40'
+                                    : 'text-rose-600 hover:text-rose-700 hover:bg-rose-50'
+                                }`}
+                                title={
+                                  r.status === 'paid'
+                                    ? 'Competência fechada e paga não pode ser excluída'
+                                    : 'Excluir faturamentos e comissões deste mês'
+                                }
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                <span className="sr-only sm:not-sr-only sm:inline-block">
+                                  Excluir
+                                </span>
+                              </Button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     )
@@ -454,6 +546,41 @@ export default function Dashboard() {
           </div>
         </CardContent>
       </Card>
+
+      {/* MODAL: Confirmação de Exclusão de Monthly Run */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-rose-700">
+              <Trash2 className="h-5 w-5 text-rose-600" />
+              <span>
+                Excluir Mês/Upload {runToDelete ? `(${formatMonth(runToDelete.month_year)})` : ''}?
+              </span>
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-xs text-slate-600">
+              Atenção: Esta ação é irreversível. Todos os faturamentos e comissões calculadas para
+              esta competência serão apagados permanentemente. Tem a certeza que deseja excluir?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingRun}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDelete}
+              disabled={deletingRun}
+              className="bg-rose-600 hover:bg-rose-700 text-white font-semibold focus:ring-rose-500"
+            >
+              {deletingRun ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  <span>Excluindo...</span>
+                </>
+              ) : (
+                'Excluir Definitivamente'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

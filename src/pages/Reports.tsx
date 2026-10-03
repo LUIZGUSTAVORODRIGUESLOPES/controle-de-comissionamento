@@ -11,6 +11,7 @@ import {
   markMonthlyRunAsPaid,
   unlockMonthlyRun,
   processMonthlyRun,
+  deleteMonthlyRun,
 } from '@/services/commissionService'
 import type { MonthlyRun, Billing, Commission, AppUser } from '@/types/database'
 import { useToast } from '@/hooks/use-toast'
@@ -45,6 +46,7 @@ import {
   ListFilter,
   Loader2,
   FileDown,
+  Trash2,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -161,6 +163,11 @@ export default function Reports() {
   const [adminPassword, setAdminPassword] = useState('')
   const [unlocking, setUnlocking] = useState(false)
   const [unlockError, setUnlockError] = useState<string | null>(null)
+
+  // Delete monthly run dialog state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [runToDelete, setRunToDelete] = useState<MonthlyRun | null>(null)
+  const [deletingRun, setDeletingRun] = useState(false)
 
   // Email dispatching state
   const [dispatchingEmail, setDispatchingEmail] = useState(false)
@@ -759,6 +766,54 @@ export default function Reports() {
     }
   }
 
+  // Action: Delete Monthly Run
+  const handleOpenDeleteDialog = (run: MonthlyRun) => {
+    if (run.status === 'paid') {
+      sonnerToast.error('Operação bloqueada: Não é permitido excluir uma competência fechada/paga.')
+      return
+    }
+    setRunToDelete(run)
+    setDeleteDialogOpen(true)
+  }
+
+  const handleConfirmDeleteRun = async () => {
+    if (!runToDelete) return
+    if (runToDelete.status === 'paid') {
+      sonnerToast.error('Operação bloqueada: Não é permitido excluir uma competência fechada/paga.')
+      setDeleteDialogOpen(false)
+      return
+    }
+
+    setDeletingRun(true)
+    const tId = sonnerToast.loading(
+      `Excluindo competência de ${formatMonth(runToDelete.month_year)}...`,
+    )
+
+    try {
+      await deleteMonthlyRun(runToDelete.id)
+      sonnerToast.success('Mês e faturamentos excluídos com sucesso!', {
+        id: tId,
+        description: `A competência de ${formatMonth(runToDelete.month_year)} e seus dados associados foram removidos permanentemente.`,
+      })
+      setDeleteDialogOpen(false)
+      const deletedId = runToDelete.id
+      setRunToDelete(null)
+
+      // Se o mês apagado era o selecionado, recarrega o primeiro visível
+      const remainingRuns = runs.filter((r) => r.id !== deletedId)
+      const nextRunId = remainingRuns.length > 0 ? remainingRuns[0].id : undefined
+      await loadInitialData(nextRunId)
+    } catch (err: any) {
+      console.error('Falha ao excluir mês de competência:', err)
+      sonnerToast.error('Erro ao excluir competência', {
+        id: tId,
+        description: err.message || 'Falha ao apagar dados da competência no banco de dados.',
+      })
+    } finally {
+      setDeletingRun(false)
+    }
+  }
+
   // Detailed Rows prepared for View and Export
   const detailedViewRows = useMemo<DetailedRow[]>(() => {
     return displayedCommissions.map((c) => {
@@ -1044,6 +1099,19 @@ export default function Reports() {
               </Button>
             )}
 
+            {/* Excluir Mês / Upload (botão de topo para a competência selecionada) */}
+            {viewMode === 'month' && !isSales && selectedRun && selectedRun.status !== 'paid' && (
+              <Button
+                onClick={() => handleOpenDeleteDialog(selectedRun)}
+                variant="outline"
+                className="border-rose-300 text-rose-700 hover:bg-rose-50 hover:text-rose-800 hover:border-rose-400 font-semibold flex items-center gap-2 h-10 px-3 shadow-xs"
+                title="Excluir esta competência e dados calculados"
+              >
+                <Trash2 className="h-4 w-4 text-rose-600" />
+                <span>Excluir Mês/Upload</span>
+              </Button>
+            )}
+
             {/* Desbloquear Mês (Estorno) */}
             {viewMode === 'month' && !isSales && selectedRun?.status === 'paid' && isAdmin && (
               <Button
@@ -1214,12 +1282,32 @@ export default function Reports() {
                   <SelectContent>
                     {runs.map((r) => (
                       <SelectItem key={r.id} value={r.id}>
-                        {formatMonth(r.month_year)}{' '}
-                        {r.status === 'paid' ? '🔒 (Pago)' : '✓ (Processado)'}
+                        <div className="flex items-center justify-between w-full gap-2">
+                          <span>
+                            {formatMonth(r.month_year)}{' '}
+                            {r.status === 'paid' ? '🔒 (Pago)' : '✓ (Processado)'}
+                          </span>
+                        </div>
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                {/* Botão de Excluir Run selecionado na visão de mês */}
+                {!isSales && selectedRun && selectedRun.status !== 'paid' && (
+                  <div className="flex justify-end pt-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleOpenDeleteDialog(selectedRun)}
+                      className="h-7 px-2 text-rose-600 hover:text-rose-700 hover:bg-rose-50 text-xs flex items-center gap-1.5"
+                      title="Excluir faturamentos e comissões desta competência"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Excluir Mês/Upload</span>
+                    </Button>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-1.5">
@@ -2339,6 +2427,41 @@ export default function Reports() {
               className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
             >
               {markingPaid ? 'Fechando mês...' : 'Confirmar Fechamento e Pagamento'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* MODAL: Confirmação de Exclusão de Monthly Run com Trava de Segurança */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-rose-700">
+              <Trash2 className="h-5 w-5 text-rose-600" />
+              <span>
+                Excluir Mês/Upload {runToDelete ? `(${formatMonth(runToDelete.month_year)})` : ''}?
+              </span>
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-xs text-slate-600">
+              Atenção: Esta ação é irreversível. Todos os faturamentos e comissões calculadas para
+              esta competência serão apagados permanentemente. Tem a certeza que deseja excluir?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingRun}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDeleteRun}
+              disabled={deletingRun}
+              className="bg-rose-600 hover:bg-rose-700 text-white font-semibold focus:ring-rose-500"
+            >
+              {deletingRun ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  <span>Excluindo...</span>
+                </>
+              ) : (
+                'Excluir Definitivamente'
+              )}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

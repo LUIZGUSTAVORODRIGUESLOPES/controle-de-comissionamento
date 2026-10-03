@@ -94,6 +94,64 @@ export async function unlockMonthlyRun(
   return data as unknown as MonthlyRun
 }
 
+export async function deleteMonthlyRun(
+  monthlyRunId: string,
+): Promise<{ success: boolean; message?: string }> {
+  // 1. Critical business rule verification: never delete paid monthly run
+  const run = await getMonthlyRunById(monthlyRunId)
+  if (!run) {
+    throw new Error('Competência não encontrada ou já excluída.')
+  }
+
+  if (run.status === 'paid') {
+    throw new Error('Operação bloqueada: Não é permitido excluir uma competência fechada/paga.')
+  }
+
+  // 2. First attempt RPC delete_monthly_run (atomic transaction with cascading order)
+  const { error: rpcError } = await (supabase.rpc as any)('delete_monthly_run', {
+    p_monthly_run_id: monthlyRunId,
+  })
+
+  if (!rpcError) {
+    return { success: true }
+  }
+
+  console.warn('Fallback to client-side sequential cascading delete:', rpcError)
+
+  // 3. Fallback: Cascading deletion in strictly correct order
+  // a) Retrieve billing IDs belonging to this monthly run
+  const { data: billingsData, error: billErr } = await db
+    .from('billings')
+    .select('id')
+    .eq('monthly_run_id', monthlyRunId)
+
+  if (billErr) throw billErr
+
+  const billingIds = (billingsData || []).map((b: { id: string }) => b.id)
+
+  // b) Delete commissions tied to these billings (if any)
+  if (billingIds.length > 0) {
+    const { error: commErr } = await db.from('commissions').delete().in('billing_id', billingIds)
+
+    if (commErr) throw commErr
+  }
+
+  // c) Delete billings belonging to this monthly run
+  const { error: delBillErr } = await db
+    .from('billings')
+    .delete()
+    .eq('monthly_run_id', monthlyRunId)
+
+  if (delBillErr) throw delBillErr
+
+  // d) Finally delete the monthly_run itself
+  const { error: delRunErr } = await db.from('monthly_runs').delete().eq('id', monthlyRunId)
+
+  if (delRunErr) throw delRunErr
+
+  return { success: true }
+}
+
 // ==========================================
 // Customers & Linking
 // ==========================================
