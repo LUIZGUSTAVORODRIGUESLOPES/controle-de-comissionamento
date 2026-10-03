@@ -6,6 +6,7 @@ import {
   listEligibleCommissionUsers,
   addUserToCustomer,
   removeUserFromCustomer,
+  bulkUpdateCustomers,
 } from '@/services/commissionService'
 import type { Customer, CustomerOrigin, AppUser } from '@/types/database'
 import { useToast } from '@/hooks/use-toast'
@@ -16,14 +17,15 @@ import {
   Users,
   Trash2,
   UserPlus,
-  ArrowUpDown,
   RefreshCw,
   ExternalLink,
   CheckCircle2,
   AlertCircle,
-  HelpCircle,
-  BadgePercent,
-  CalendarRange,
+  Edit3,
+  CheckSquare,
+  Square,
+  X,
+  UserCheck,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -31,6 +33,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Select,
   SelectContent,
@@ -45,6 +48,14 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   Table,
   TableBody,
@@ -66,6 +77,15 @@ export default function Customers() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [originFilter, setOriginFilter] = useState<'all' | 'inbound' | 'outbound'>('all')
+
+  // Bulk Selection State
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<string[]>([])
+  const [bulkModalOpen, setBulkModalOpen] = useState(false)
+  const [bulkOrigin, setBulkOrigin] = useState<'keep' | 'inbound' | 'outbound'>('keep')
+  const [bulkSelectedUserIds, setBulkSelectedUserIds] = useState<string[]>([])
+  const [bulkReplaceUsers, setBulkReplaceUsers] = useState(false)
+  const [bulkNoCommission, setBulkNoCommission] = useState<'keep' | 'yes' | 'no'>('keep')
+  const [bulkSaving, setBulkSaving] = useState(false)
 
   // Details & Edit Sheet State
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -132,6 +152,121 @@ export default function Customers() {
       return c.origin === originFilter
     })
   }, [customers, originFilter])
+
+  // Checkbox Selection Logic
+  const allFilteredSelected = useMemo(() => {
+    if (filteredCustomers.length === 0) return false
+    return filteredCustomers.every((c) => selectedCustomerIds.includes(c.id))
+  }, [filteredCustomers, selectedCustomerIds])
+
+  const someFilteredSelected = useMemo(() => {
+    if (filteredCustomers.length === 0) return false
+    const count = filteredCustomers.filter((c) => selectedCustomerIds.includes(c.id)).length
+    return count > 0 && count < filteredCustomers.length
+  }, [filteredCustomers, selectedCustomerIds])
+
+  const handleToggleSelectAll = (checked: boolean | 'indeterminate') => {
+    if (checked === true) {
+      const visibleIds = filteredCustomers.map((c) => c.id)
+      setSelectedCustomerIds((prev) => Array.from(new Set([...prev, ...visibleIds])))
+    } else {
+      const visibleIdSet = new Set(filteredCustomers.map((c) => c.id))
+      setSelectedCustomerIds((prev) => prev.filter((id) => !visibleIdSet.has(id)))
+    }
+  }
+
+  const handleToggleCustomerSelect = (id: string, checked: boolean | 'indeterminate') => {
+    if (checked === true) {
+      setSelectedCustomerIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    } else {
+      setSelectedCustomerIds((prev) => prev.filter((item) => item !== id))
+    }
+  }
+
+  const handleClearSelection = () => {
+    setSelectedCustomerIds([])
+  }
+
+  const handleOpenBulkModal = () => {
+    setBulkOrigin('keep')
+    setBulkSelectedUserIds([])
+    setBulkReplaceUsers(false)
+    setBulkNoCommission('keep')
+    setBulkModalOpen(true)
+  }
+
+  const handleToggleBulkUser = (userId: string) => {
+    setBulkSelectedUserIds((prev) =>
+      prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId],
+    )
+  }
+
+  const handleSelectAllBulkUsers = () => {
+    if (bulkSelectedUserIds.length === eligibleUsers.length) {
+      setBulkSelectedUserIds([])
+    } else {
+      setBulkSelectedUserIds(eligibleUsers.map((u) => u.id))
+    }
+  }
+
+  const handleExecuteBulkUpdate = async () => {
+    if (selectedCustomerIds.length === 0) return
+
+    setBulkSaving(true)
+    const toastId = toast({
+      title: 'Atualizando clientes em lote...',
+      description: `Aplicando alterações para ${selectedCustomerIds.length} cliente(s) selecionado(s). Aguarde...`,
+    })
+
+    try {
+      const payload: {
+        customerIds: string[]
+        origin?: 'inbound' | 'outbound' | null
+        noCommissionFlag?: boolean
+        userIds?: string[]
+        replaceUsers?: boolean
+      } = {
+        customerIds: selectedCustomerIds,
+      }
+
+      if (bulkOrigin !== 'keep') {
+        payload.origin = bulkOrigin
+      }
+
+      if (bulkNoCommission === 'yes') {
+        payload.noCommissionFlag = true
+      } else if (bulkNoCommission === 'no') {
+        payload.noCommissionFlag = false
+      }
+
+      // Se o usuário selecionou usuários para vincular ou marcou o modo de substituição
+      // (ex: se marcou replace e selecionou 0 usuários, limpa a carteira; ou se selecionou >=1 usuários)
+      if (bulkSelectedUserIds.length > 0 || bulkReplaceUsers) {
+        payload.userIds = bulkSelectedUserIds
+        payload.replaceUsers = bulkReplaceUsers
+      }
+
+      await bulkUpdateCustomers(payload)
+
+      toast({
+        title: 'Atualização em massa concluída!',
+        description: `${selectedCustomerIds.length} cliente(s) atualizado(s) com sucesso.`,
+      })
+
+      setBulkModalOpen(false)
+      setSelectedCustomerIds([])
+      await loadCustomers()
+    } catch (err: any) {
+      console.error(err)
+      toast({
+        title: 'Erro na atualização em massa',
+        description: err.message || 'Falha ao aplicar alterações em lote.',
+        variant: 'destructive',
+      })
+    } finally {
+      setBulkSaving(false)
+    }
+  }
 
   // Open Customer Details
   const handleOpenCustomer = async (cust: Customer) => {
@@ -388,6 +523,46 @@ export default function Customers() {
         </CardContent>
       </Card>
 
+      {/* Bulk Actions Floating Bar / Toolbar */}
+      {selectedCustomerIds.length > 0 && (
+        <div className="sticky top-4 z-20 flex flex-col sm:flex-row items-center justify-between gap-3 p-4 bg-slate-900 text-white rounded-xl shadow-lg border border-slate-800 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="flex items-center gap-3">
+            <div className="h-8 w-8 rounded-lg bg-[#0F766E] flex items-center justify-center font-bold text-white text-xs shrink-0">
+              {selectedCustomerIds.length}
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-white">
+                {selectedCustomerIds.length} cliente{selectedCustomerIds.length > 1 ? 's' : ''}{' '}
+                selecionado{selectedCustomerIds.length > 1 ? 's' : ''}
+              </p>
+              <p className="text-xs text-slate-400">
+                Atribua gerentes, mude a regra de comissão ou gerencie a carteira em massa
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleClearSelection}
+              className="h-9 text-xs border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white"
+            >
+              <X className="h-3.5 w-3.5 mr-1" />
+              Limpar seleção
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleOpenBulkModal}
+              className="h-9 text-xs font-semibold bg-[#0F766E] hover:bg-[#115E59] text-white gap-2 shadow-sm"
+            >
+              <Edit3 className="h-3.5 w-3.5" />
+              <span>Editar {selectedCustomerIds.length} Clientes Selecionados</span>
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Main Customers Table */}
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="py-4 px-6 border-b border-slate-100 flex flex-row items-center justify-between">
@@ -396,16 +571,36 @@ export default function Customers() {
               Clientes Cadastrados ({filteredCustomers.length})
             </CardTitle>
             <CardDescription className="text-xs text-slate-500">
-              Clique em qualquer linha para abrir os detalhes, editar datas e gerenciar vendedores
-              vinculados.
+              Selecione múltiplos clientes para editar em massa ou clique na linha para abrir os
+              detalhes individuais.
             </CardDescription>
           </div>
+          {selectedCustomerIds.length > 0 && (
+            <Button
+              size="sm"
+              onClick={handleOpenBulkModal}
+              className="bg-[#0F766E] hover:bg-[#115E59] text-white text-xs font-semibold gap-1.5 h-8"
+            >
+              <Edit3 className="h-3.5 w-3.5" />
+              <span>Editar {selectedCustomerIds.length} Clientes Selecionados</span>
+            </Button>
+          )}
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <Table>
               <TableHeader className="bg-slate-50/70">
                 <TableRow>
+                  <TableHead className="w-12 px-3 text-center">
+                    <Checkbox
+                      checked={
+                        allFilteredSelected ? true : someFilteredSelected ? 'indeterminate' : false
+                      }
+                      onCheckedChange={handleToggleSelectAll}
+                      aria-label="Selecionar todos os clientes visíveis"
+                      className="translate-y-[2px]"
+                    />
+                  </TableHead>
                   <TableHead className="w-32 font-bold text-slate-600">ID / Código</TableHead>
                   <TableHead className="font-bold text-slate-600">Nome do Cliente</TableHead>
                   <TableHead className="w-36 font-bold text-slate-600">Origem</TableHead>
@@ -418,7 +613,7 @@ export default function Customers() {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-12 text-center text-slate-500">
+                    <TableCell colSpan={8} className="py-12 text-center text-slate-500">
                       <div className="flex flex-col items-center justify-center gap-2">
                         <div className="h-6 w-6 rounded-full border-2 border-[#0F766E] border-t-transparent animate-spin" />
                         <span className="text-xs text-slate-500">Carregando clientes...</span>
@@ -427,7 +622,7 @@ export default function Customers() {
                   </TableRow>
                 ) : filteredCustomers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-12 text-center text-slate-500">
+                    <TableCell colSpan={8} className="py-12 text-center text-slate-500">
                       <div className="flex flex-col items-center justify-center gap-2">
                         <Building2 className="h-8 w-8 text-slate-300" />
                         <span className="font-semibold text-slate-700">
@@ -443,22 +638,46 @@ export default function Customers() {
                   filteredCustomers.map((cust) => {
                     const links = cust.customer_users || []
                     const isNoComm = cust.no_commission_flag
+                    const isSelected = selectedCustomerIds.includes(cust.id)
 
                     return (
                       <TableRow
                         key={cust.id}
-                        onClick={() => handleOpenCustomer(cust)}
-                        className="cursor-pointer hover:bg-teal-50/40 transition-colors group"
+                        data-state={isSelected ? 'selected' : undefined}
+                        className={`cursor-pointer transition-colors group ${
+                          isSelected ? 'bg-teal-50/80 hover:bg-teal-100/60' : 'hover:bg-slate-50'
+                        }`}
                       >
-                        <TableCell className="font-mono font-semibold text-xs text-slate-800">
+                        <TableCell
+                          className="w-12 px-3 text-center"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                          }}
+                        >
+                          <Checkbox
+                            checked={isSelected}
+                            onCheckedChange={(checked) =>
+                              handleToggleCustomerSelect(cust.id, checked)
+                            }
+                            aria-label={`Selecionar cliente ${cust.name}`}
+                            className="translate-y-[2px]"
+                          />
+                        </TableCell>
+                        <TableCell
+                          onClick={() => handleOpenCustomer(cust)}
+                          className="font-mono font-semibold text-xs text-slate-800"
+                        >
                           <span className="bg-slate-100 group-hover:bg-teal-100/60 px-2 py-0.5 rounded text-slate-700 transition-colors">
                             {cust.customer_code}
                           </span>
                         </TableCell>
-                        <TableCell className="font-medium text-slate-900 group-hover:text-[#0F766E] transition-colors">
+                        <TableCell
+                          onClick={() => handleOpenCustomer(cust)}
+                          className="font-medium text-slate-900 group-hover:text-[#0F766E] transition-colors"
+                        >
                           {cust.name}
                         </TableCell>
-                        <TableCell>
+                        <TableCell onClick={() => handleOpenCustomer(cust)}>
                           {cust.origin === 'inbound' ? (
                             <Badge
                               variant="outline"
@@ -475,10 +694,13 @@ export default function Customers() {
                             </Badge>
                           )}
                         </TableCell>
-                        <TableCell className="text-xs text-slate-600 font-mono">
+                        <TableCell
+                          onClick={() => handleOpenCustomer(cust)}
+                          className="text-xs text-slate-600 font-mono"
+                        >
                           {formatDateDisplay(cust.start_date)}
                         </TableCell>
-                        <TableCell>
+                        <TableCell onClick={() => handleOpenCustomer(cust)}>
                           {isNoComm ? (
                             <span className="text-xs text-slate-400 italic">
                               Dispensado (Sem comissão)
@@ -502,7 +724,7 @@ export default function Customers() {
                             </span>
                           )}
                         </TableCell>
-                        <TableCell>
+                        <TableCell onClick={() => handleOpenCustomer(cust)}>
                           {isNoComm ? (
                             <Badge className="bg-slate-200 text-slate-700 hover:bg-slate-200 border-transparent text-[11px] font-semibold">
                               Sem Comissão
@@ -513,7 +735,7 @@ export default function Customers() {
                             </Badge>
                           )}
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="text-right" onClick={() => handleOpenCustomer(cust)}>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -826,6 +1048,232 @@ export default function Customers() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* BULK EDIT MODAL / DIALOG */}
+      <Dialog open={bulkModalOpen} onOpenChange={setBulkModalOpen}>
+        <DialogContent className="w-full sm:max-w-2xl max-h-[90vh] overflow-y-auto p-6">
+          <DialogHeader className="text-left space-y-1 pb-2 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <Badge className="bg-teal-100 text-[#0F766E] border-teal-200 text-xs font-semibold">
+                Edição em Massa
+              </Badge>
+              <DialogTitle className="text-xl font-bold text-slate-900">
+                Editar {selectedCustomerIds.length} Clientes Selecionados
+              </DialogTitle>
+            </div>
+            <DialogDescription className="text-xs text-slate-500">
+              Altere a origem (regra de comissionamento) e reatribua a carteira de vendedores e
+              gerentes de dezenas de clientes em uma única operação.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5 py-3">
+            {/* 1. Origem / Tipo de Comissão */}
+            <div className="space-y-1.5 p-4 rounded-xl border border-slate-200 bg-slate-50/50">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="bulk_origin" className="text-xs font-bold text-slate-800">
+                  Origem / Tipo de Comissão
+                </Label>
+                <span className="text-[11px] text-slate-500">
+                  Define se a comissão é Inbound ou Outbound
+                </span>
+              </div>
+              <Select
+                value={bulkOrigin}
+                onValueChange={(val: 'keep' | 'inbound' | 'outbound') => setBulkOrigin(val)}
+              >
+                <SelectTrigger id="bulk_origin" className="h-10 bg-white border-slate-300 text-xs">
+                  <SelectValue placeholder="Selecione..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="keep" className="text-xs">
+                    Não alterar (manter origem atual de cada cliente)
+                  </SelectItem>
+                  <SelectItem value="inbound" className="text-xs">
+                    Inbound (Lead receptivo &bull; Alíquota fixa/vitalícia)
+                  </SelectItem>
+                  <SelectItem value="outbound" className="text-xs">
+                    Outbound (Prospecção ativa &bull; Alíquota 1º ano vs 2º ano+)
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* 2. Flag Sem Comissão (opcional) */}
+            <div className="space-y-1.5 p-4 rounded-xl border border-slate-200 bg-slate-50/50">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="bulk_nocomm" className="text-xs font-bold text-slate-800">
+                  Status de Comissão (Dispensar de Comissões)
+                </Label>
+                <span className="text-[11px] text-slate-500">Opcional</span>
+              </div>
+              <Select
+                value={bulkNoCommission}
+                onValueChange={(val: 'keep' | 'yes' | 'no') => setBulkNoCommission(val)}
+              >
+                <SelectTrigger id="bulk_nocomm" className="h-10 bg-white border-slate-300 text-xs">
+                  <SelectValue placeholder="Selecione..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="keep" className="text-xs">
+                    Não alterar (manter status atual de cada cliente)
+                  </SelectItem>
+                  <SelectItem value="no" className="text-xs">
+                    Comissão Ativa (não dispensado)
+                  </SelectItem>
+                  <SelectItem value="yes" className="text-xs">
+                    Dispensar de Comissão (Sem comissão para nenhum mês)
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* 3. Vincular Vendedores / Gerentes */}
+            <div className="space-y-3 p-4 rounded-xl border border-slate-200 bg-white shadow-xs">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <Users className="h-4 w-4 text-[#0F766E]" />
+                    Vincular Vendedores / Gerentes
+                  </h4>
+                  <p className="text-[11px] text-slate-500">
+                    Selecione os responsáveis para atribuir a todos os {selectedCustomerIds.length}{' '}
+                    clientes.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleSelectAllBulkUsers}
+                    className="h-7 text-xs text-[#0F766E] hover:text-[#115E59] px-2 font-medium"
+                  >
+                    {bulkSelectedUserIds.length === eligibleUsers.length
+                      ? 'Desmarcar todos'
+                      : 'Selecionar todos'}
+                  </Button>
+                  <Badge variant="outline" className="text-xs font-mono font-bold">
+                    {bulkSelectedUserIds.length} selecionado(s)
+                  </Badge>
+                </div>
+              </div>
+
+              <div className="max-h-56 overflow-y-auto space-y-1.5 border border-slate-200 rounded-lg p-2 bg-slate-50/40">
+                {eligibleUsers.length === 0 ? (
+                  <p className="text-xs text-slate-400 p-2 text-center">
+                    Nenhum usuário com papel manager ou sales encontrado.
+                  </p>
+                ) : (
+                  eligibleUsers.map((user) => {
+                    const isChecked = bulkSelectedUserIds.includes(user.id)
+                    return (
+                      <div
+                        key={user.id}
+                        onClick={() => handleToggleBulkUser(user.id)}
+                        className={`flex items-center justify-between p-2.5 rounded-md border cursor-pointer transition-colors ${
+                          isChecked
+                            ? 'bg-teal-50/80 border-teal-300 text-slate-900'
+                            : 'bg-white border-slate-200 hover:bg-slate-100/70 text-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <Checkbox
+                            checked={isChecked}
+                            onCheckedChange={() => handleToggleBulkUser(user.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            aria-label={`Selecionar ${user.name}`}
+                          />
+                          <div>
+                            <p className="text-xs font-semibold">{user.name}</p>
+                            <p className="text-[11px] text-slate-500">{user.email}</p>
+                          </div>
+                        </div>
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] uppercase font-semibold text-slate-600 bg-white"
+                        >
+                          {user.role === 'manager' ? 'Gerente' : 'Vendedor'}
+                        </Badge>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+
+              {/* 4. Ação Crítica: Modo de Substituição */}
+              <div className="mt-3 p-3.5 rounded-lg border border-amber-200 bg-amber-50/70 space-y-2">
+                <div className="flex items-start gap-3">
+                  <Checkbox
+                    id="bulk_replace"
+                    checked={bulkReplaceUsers}
+                    onCheckedChange={(checked) => setBulkReplaceUsers(checked === true)}
+                    className="mt-0.5 border-amber-400 data-[state=checked]:bg-amber-700 data-[state=checked]:border-amber-700"
+                  />
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="bulk_replace"
+                      className="text-xs font-bold text-amber-950 cursor-pointer flex items-center gap-1.5"
+                    >
+                      <AlertCircle className="h-3.5 w-3.5 text-amber-600" />
+                      Substituir carteira existente?
+                    </Label>
+                    <p className="text-[11px] text-amber-900 leading-relaxed">
+                      <strong>Marcado:</strong> apaga os vínculos antigos destes clientes e insere
+                      apenas os novos selecionados acima (ideal para reatribuição de carteira
+                      inteira a um novo executivo/gerente).
+                      <br />
+                      <strong>Desmarcado:</strong> apenas adiciona os novos vendedores aos vínculos
+                      já existentes, sem remover quem já estava vinculado.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-3 border-t border-slate-100">
+            <span className="text-xs text-slate-500">
+              {selectedCustomerIds.length} cliente(s) serão afetados.
+            </span>
+            <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setBulkModalOpen(false)}
+                disabled={bulkSaving}
+                className="h-9 text-xs border-slate-300"
+              >
+                Cancelar
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleExecuteBulkUpdate}
+                disabled={
+                  bulkSaving ||
+                  (bulkOrigin === 'keep' &&
+                    bulkNoCommission === 'keep' &&
+                    bulkSelectedUserIds.length === 0 &&
+                    !bulkReplaceUsers)
+                }
+                className="h-9 text-xs font-semibold bg-[#0F766E] hover:bg-[#115E59] text-white gap-2 shadow-xs"
+              >
+                {bulkSaving ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    <span>Salvando alterações...</span>
+                  </>
+                ) : (
+                  <>
+                    <UserCheck className="h-3.5 w-3.5" />
+                    <span>Confirmar e Aplicar</span>
+                  </>
+                )}
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

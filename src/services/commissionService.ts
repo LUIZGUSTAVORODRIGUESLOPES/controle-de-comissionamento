@@ -250,6 +250,103 @@ export async function updateCustomerDetails(
   }
 }
 
+export interface BulkUpdateCustomersParams {
+  customerIds: string[]
+  origin?: 'inbound' | 'outbound' | null
+  noCommissionFlag?: boolean
+  userIds?: string[]
+  replaceUsers?: boolean // true: delete existing links and insert userIds; false: append new userIds (avoid duplicates)
+}
+
+export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Promise<void> {
+  const { customerIds, origin, noCommissionFlag, userIds, replaceUsers = false } = params
+
+  if (!customerIds || customerIds.length === 0) {
+    return
+  }
+
+  // 1. Atualizar campos da tabela customers (se houver campos a atualizar)
+  const customerUpdates: {
+    origin?: 'inbound' | 'outbound'
+    no_commission_flag?: boolean
+  } = {}
+
+  if (origin !== undefined && origin !== null) {
+    customerUpdates.origin = origin
+  }
+  if (noCommissionFlag !== undefined) {
+    customerUpdates.no_commission_flag = noCommissionFlag
+  }
+
+  if (Object.keys(customerUpdates).length > 0) {
+    const { error: updateError } = await db
+      .from('customers')
+      .update(customerUpdates)
+      .in('id', customerIds)
+
+    if (updateError) throw updateError
+  }
+
+  // 2. Tratar vínculos de vendedores/gerentes em customer_users (se userIds foi especificado)
+  if (userIds !== undefined) {
+    if (replaceUsers) {
+      // Modo substituição: deletar vínculos antigos dos clientes selecionados
+      const { error: delError } = await db
+        .from('customer_users')
+        .delete()
+        .in('customer_id', customerIds)
+
+      if (delError) throw delError
+
+      // Inserir apenas os novos selecionados
+      if (userIds.length > 0) {
+        const rowsToInsert: Array<{ customer_id: string; user_id: string }> = []
+        for (const custId of customerIds) {
+          for (const uid of userIds) {
+            rowsToInsert.push({ customer_id: custId, user_id: uid })
+          }
+        }
+
+        if (rowsToInsert.length > 0) {
+          const { error: insError } = await db.from('customer_users').insert(rowsToInsert)
+          if (insError) throw insError
+        }
+      }
+    } else {
+      // Modo adição: apenas adicionar vínculos que ainda não existam para evitar violar customer_users_unique
+      if (userIds.length > 0) {
+        // Buscar vínculos existentes dos clientes selecionados
+        const { data: existingLinks, error: fetchErr } = await db
+          .from('customer_users')
+          .select('customer_id, user_id')
+          .in('customer_id', customerIds)
+
+        if (fetchErr) throw fetchErr
+
+        const existingSet = new Set(
+          (existingLinks || []).map((link: any) => `${link.customer_id}_${link.user_id}`),
+        )
+
+        const rowsToInsert: Array<{ customer_id: string; user_id: string }> = []
+        for (const custId of customerIds) {
+          for (const uid of userIds) {
+            const key = `${custId}_${uid}`
+            if (!existingSet.has(key)) {
+              rowsToInsert.push({ customer_id: custId, user_id: uid })
+              existingSet.add(key) // Evita duplicar na própria lista
+            }
+          }
+        }
+
+        if (rowsToInsert.length > 0) {
+          const { error: insError } = await db.from('customer_users').insert(rowsToInsert)
+          if (insError) throw insError
+        }
+      }
+    }
+  }
+}
+
 export async function setCustomerNoCommission(
   customerId: string,
   noCommission: boolean,
