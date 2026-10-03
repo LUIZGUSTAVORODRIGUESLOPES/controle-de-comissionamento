@@ -1,5 +1,5 @@
 import { jsPDF } from 'jspdf'
-import autoTable from 'jspdf-autotable'
+import autoTable, { applyPlugin } from 'jspdf-autotable'
 import * as XLSX from 'xlsx'
 import type { SystemSettings } from '@/types/database'
 
@@ -220,6 +220,46 @@ export function exportToXLSX(payload: ExportDataPayload, filename = 'relatorio_c
 // ==========================================
 // PDF EXPORT (jsPDF + jsPDF-autotable)
 // ==========================================
+
+// Garante que o plugin autoTable esteja registrado na classe jsPDF para ESM / Vite bundles
+try {
+  applyPlugin(jsPDF)
+} catch {
+  // Ignora se já registrado ou em ambiente sem protótipo direto
+}
+
+/**
+ * Executa autoTable de forma resiliente tanto para standalone function (autoTable / autoTable.default)
+ * quanto via protótipo doc.autoTable.
+ */
+function callAutoTable(doc: jsPDF, options: any) {
+  const runner =
+    typeof autoTable === 'function'
+      ? autoTable
+      : (autoTable as any)?.default && typeof (autoTable as any).default === 'function'
+        ? (autoTable as any).default
+        : typeof (doc as any).autoTable === 'function'
+          ? (doc as any).autoTable.bind(doc)
+          : null
+
+  if (runner) {
+    if (runner === (doc as any).autoTable) {
+      runner(options)
+    } else {
+      runner(doc, options)
+    }
+    return
+  }
+
+  // Fallback caso apenas doc.autoTable exista
+  if (typeof (doc as any).autoTable === 'function') {
+    ;(doc as any).autoTable(options)
+    return
+  }
+
+  throw new Error('Plugin jspdf-autotable não pôde ser inicializado')
+}
+
 async function loadImageAsBase64(url: string): Promise<string | null> {
   return new Promise((resolve) => {
     const img = new Image()
@@ -376,7 +416,7 @@ export async function exportToPDF(payload: ExportDataPayload, filename = 'relato
       ],
     ]
 
-    autoTable(doc, {
+    callAutoTable(doc, {
       startY: tableStartY,
       head: headers,
       body: body,
@@ -454,7 +494,7 @@ export async function exportToPDF(payload: ExportDataPayload, filename = 'relato
       ],
     ]
 
-    autoTable(doc, {
+    callAutoTable(doc, {
       startY: tableStartY,
       head: headers,
       body: body,
