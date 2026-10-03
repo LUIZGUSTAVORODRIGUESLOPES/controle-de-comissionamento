@@ -238,26 +238,35 @@ Deno.serve(async (req: Request) => {
       const linkedUsers = (customerUsers || []).filter(
         (cu) => cu.customer_id === billing.customer_id,
       )
-      const customerOrigin = customer?.origin || 'outbound'
       const monthsActive = getMonthDifference(customer?.start_date, run.month_year)
 
       for (const link of linkedUsers) {
-        // Find profile for this user matching origin
+        // Read commission_type directly from the link (customer_users), fallback to customer.origin or 'inbound'
+        const linkRule = (link.commission_type || customer?.origin || 'inbound').toLowerCase()
+
+        // Find profile for this user matching rule
         const userProfile = (profiles || []).find(
-          (p) => p.user_id === link.user_id && p.type === customerOrigin,
+          (p) => p.user_id === link.user_id && p.type === linkRule,
         )
 
         let percentageToApply = 0
         if (userProfile) {
-          if (customerOrigin === 'inbound') {
-            percentageToApply = Number(userProfile.default_percentage_year_1) || 0
-          } else {
+          if (linkRule === 'outbound') {
             // outbound: <= 12 months uses year 1, > 12 months uses year 2+
             if (monthsActive <= 12) {
               percentageToApply = Number(userProfile.default_percentage_year_1) || 0
             } else {
               percentageToApply = Number(userProfile.default_percentage_year_2_plus) || 0
             }
+          } else {
+            // inbound, fixed or others use default_percentage_year_1
+            percentageToApply = Number(userProfile.default_percentage_year_1) || 0
+          }
+        } else {
+          // If no specific profile matching linkRule, try finding any profile for the user (fallback)
+          const fallbackProfile = (profiles || []).find((p) => p.user_id === link.user_id)
+          if (fallbackProfile) {
+            percentageToApply = Number(fallbackProfile.default_percentage_year_1) || 0
           }
         }
 

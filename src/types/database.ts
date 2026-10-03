@@ -37,6 +37,7 @@ export interface CustomerUserLink {
   id: string
   customer_id: string
   user_id: string
+  commission_type?: 'inbound' | 'outbound' | 'fixed' | string
   created_at?: string
   user?: AppUser
 }

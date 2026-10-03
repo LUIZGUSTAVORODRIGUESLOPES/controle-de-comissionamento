@@ -154,23 +154,34 @@ export async function listEligibleCommissionUsers(): Promise<AppUser[]> {
   return (data as unknown as AppUser[]) || []
 }
 
-export async function addUserToCustomer(customerId: string, userId: string): Promise<void> {
+export async function addUserToCustomer(
+  customerId: string,
+  userId: string,
+  commissionType: string = 'inbound',
+): Promise<void> {
   // Check if link already exists
   const { data: existing } = await db
     .from('customer_users')
-    .select('id')
+    .select('id, commission_type')
     .eq('customer_id', customerId)
     .eq('user_id', userId)
     .maybeSingle()
 
   if (existing) {
-    return // Already linked, avoid duplicates
+    if (existing.commission_type !== commissionType) {
+      await db
+        .from('customer_users')
+        .update({ commission_type: commissionType })
+        .eq('id', existing.id)
+    }
+    return // Already linked
   }
 
   const { error } = await db.from('customer_users').insert([
     {
       customer_id: customerId,
       user_id: userId,
+      commission_type: commissionType,
     },
   ])
 
@@ -237,32 +248,59 @@ export async function updateCustomerDetails(
 
   if (custError) throw custError
 
-  // 2. Remove existing links and re-add selected userIds
+  // 2. Remove existing links and re-add selected userIds with customer's origin as commission_type
   await db.from('customer_users').delete().eq('customer_id', customerId)
 
   if (userIds.length > 0) {
     const rows = userIds.map((uid) => ({
       customer_id: customerId,
       user_id: uid,
+      commission_type: origin || 'inbound',
     }))
     const { error: linkError } = await db.from('customer_users').insert(rows)
     if (linkError) throw linkError
   }
 }
 
+export interface UserWithRulePayload {
+  user_id: string
+  commission_type: string
+}
+
 export interface BulkUpdateCustomersParams {
   customerIds: string[]
   origin?: 'inbound' | 'outbound' | null
   noCommissionFlag?: boolean
+  usersWithRules?: UserWithRulePayload[]
   userIds?: string[]
-  replaceUsers?: boolean // true: delete existing links and insert userIds; false: append new userIds (avoid duplicates)
+  replaceUsers?: boolean // true: delete existing links and insert users; false: append new users (avoid duplicates)
 }
 
 export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Promise<void> {
-  const { customerIds, origin, noCommissionFlag, userIds, replaceUsers = false } = params
+  const {
+    customerIds,
+    origin,
+    noCommissionFlag,
+    usersWithRules,
+    userIds,
+    replaceUsers = false,
+  } = params
 
   if (!customerIds || customerIds.length === 0) {
     return
+  }
+
+  // Normalize targets to { user_id, commission_type }
+  let targetUserRules: UserWithRulePayload[] | undefined = undefined
+  if (usersWithRules !== undefined) {
+    targetUserRules = usersWithRules
+  } else if (userIds !== undefined) {
+    // Backward compatibility if called with userIds array
+    const defaultRule = origin && (origin as string) !== 'keep' ? origin : 'inbound'
+    targetUserRules = userIds.map((uid) => ({
+      user_id: uid,
+      commission_type: defaultRule,
+    }))
   }
 
   // 1. Atualizar campos da tabela customers (se houver campos a atualizar)
@@ -287,8 +325,8 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
     if (updateError) throw updateError
   }
 
-  // 2. Tratar vínculos de vendedores/gerentes em customer_users (se userIds foi especificado)
-  if (userIds !== undefined) {
+  // 2. Tratar vínculos de vendedores/gerentes em customer_users (se targetUserRules foi especificado)
+  if (targetUserRules !== undefined) {
     if (replaceUsers) {
       // Modo substituição: deletar vínculos antigos dos clientes selecionados
       const { error: delError } = await db
@@ -298,12 +336,20 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
 
       if (delError) throw delError
 
-      // Inserir apenas os novos selecionados
-      if (userIds.length > 0) {
-        const rowsToInsert: Array<{ customer_id: string; user_id: string }> = []
+      // Inserir apenas os novos selecionados com a regra de cada usuário
+      if (targetUserRules.length > 0) {
+        const rowsToInsert: Array<{
+          customer_id: string
+          user_id: string
+          commission_type: string
+        }> = []
         for (const custId of customerIds) {
-          for (const uid of userIds) {
-            rowsToInsert.push({ customer_id: custId, user_id: uid })
+          for (const item of targetUserRules) {
+            rowsToInsert.push({
+              customer_id: custId,
+              user_id: item.user_id,
+              commission_type: item.commission_type || 'inbound',
+            })
           }
         }
 
@@ -314,26 +360,41 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
       }
     } else {
       // Modo adição: apenas adicionar vínculos que ainda não existam para evitar violar customer_users_unique
-      if (userIds.length > 0) {
+      if (targetUserRules.length > 0) {
         // Buscar vínculos existentes dos clientes selecionados
         const { data: existingLinks, error: fetchErr } = await db
           .from('customer_users')
-          .select('customer_id, user_id')
+          .select('id, customer_id, user_id, commission_type')
           .in('customer_id', customerIds)
 
         if (fetchErr) throw fetchErr
 
-        const existingSet = new Set(
-          (existingLinks || []).map((link: any) => `${link.customer_id}_${link.user_id}`),
+        const existingMap = new Map<string, any>(
+          (existingLinks || []).map((link: any) => [`${link.customer_id}_${link.user_id}`, link]),
         )
 
-        const rowsToInsert: Array<{ customer_id: string; user_id: string }> = []
+        const rowsToInsert: Array<{
+          customer_id: string
+          user_id: string
+          commission_type: string
+        }> = []
         for (const custId of customerIds) {
-          for (const uid of userIds) {
-            const key = `${custId}_${uid}`
-            if (!existingSet.has(key)) {
-              rowsToInsert.push({ customer_id: custId, user_id: uid })
-              existingSet.add(key) // Evita duplicar na própria lista
+          for (const item of targetUserRules) {
+            const key = `${custId}_${item.user_id}`
+            const existing = existingMap.get(key)
+            if (!existing) {
+              rowsToInsert.push({
+                customer_id: custId,
+                user_id: item.user_id,
+                commission_type: item.commission_type || 'inbound',
+              })
+              existingMap.set(key, { customer_id: custId, user_id: item.user_id }) // Evita duplicar no batch
+            } else if (existing.id && existing.commission_type !== item.commission_type) {
+              // Se já existia mas com tipo diferente, atualizamos a regra
+              await db
+                .from('customer_users')
+                .update({ commission_type: item.commission_type || 'inbound' })
+                .eq('id', existing.id)
             }
           }
         }
@@ -536,20 +597,25 @@ async function processMonthlyRunClientSide(monthlyRunId: string) {
     }
 
     const linked = customerUsers.filter((cu) => cu.customer_id === billing.customer_id)
-    const origin = cust?.origin || 'outbound'
     const months = getMonthsDiff(cust?.start_date, run.month_year)
 
     for (const link of linked) {
-      const prof = profiles.find((p) => p.user_id === link.user_id && p.type === origin)
+      const linkRule = (link.commission_type || cust?.origin || 'inbound').toLowerCase()
+      const prof = profiles.find((p) => p.user_id === link.user_id && p.type === linkRule)
       let pct = 0
       if (prof) {
-        if (origin === 'inbound') {
-          pct = Number(prof.default_percentage_year_1) || 0
-        } else {
+        if (linkRule === 'outbound') {
           pct =
             months <= 12
               ? Number(prof.default_percentage_year_1) || 0
               : Number(prof.default_percentage_year_2_plus) || 0
+        } else {
+          pct = Number(prof.default_percentage_year_1) || 0
+        }
+      } else {
+        const fallbackProf = profiles.find((p) => p.user_id === link.user_id)
+        if (fallbackProf) {
+          pct = Number(fallbackProf.default_percentage_year_1) || 0
         }
       }
 

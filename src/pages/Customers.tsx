@@ -57,6 +57,16 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import {
   Table,
   TableBody,
   TableCell,
@@ -81,11 +91,15 @@ export default function Customers() {
   // Bulk Selection State
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<string[]>([])
   const [bulkModalOpen, setBulkModalOpen] = useState(false)
-  const [bulkOrigin, setBulkOrigin] = useState<'keep' | 'inbound' | 'outbound'>('keep')
   const [bulkSelectedUserIds, setBulkSelectedUserIds] = useState<string[]>([])
+  const [bulkUserRules, setBulkUserRules] = useState<Record<string, string>>({})
   const [bulkReplaceUsers, setBulkReplaceUsers] = useState(false)
   const [bulkNoCommission, setBulkNoCommission] = useState<'keep' | 'yes' | 'no'>('keep')
   const [bulkSaving, setBulkSaving] = useState(false)
+
+  // Safety confirmation dialog state for clients with no_commission_flag = true
+  const [confirmSafetyOpen, setConfirmSafetyOpen] = useState(false)
+  const [noCommCustomersCount, setNoCommCustomersCount] = useState(0)
 
   // Details & Edit Sheet State
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -102,6 +116,7 @@ export default function Customers() {
   // Users linking state
   const [eligibleUsers, setEligibleUsers] = useState<AppUser[]>([])
   const [selectedUserIdToAdd, setSelectedUserIdToAdd] = useState<string>('')
+  const [selectedRuleToAdd, setSelectedRuleToAdd] = useState<string>('inbound')
   const [addingUser, setAddingUser] = useState(false)
   const [removingUserId, setRemovingUserId] = useState<string | null>(null)
 
@@ -188,49 +203,98 @@ export default function Customers() {
   }
 
   const handleOpenBulkModal = () => {
-    setBulkOrigin('keep')
     setBulkSelectedUserIds([])
+    setBulkUserRules({})
     setBulkReplaceUsers(false)
     setBulkNoCommission('keep')
     setBulkModalOpen(true)
   }
 
   const handleToggleBulkUser = (userId: string) => {
-    setBulkSelectedUserIds((prev) =>
-      prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId],
-    )
+    setBulkSelectedUserIds((prev) => {
+      if (prev.includes(userId)) {
+        return prev.filter((id) => id !== userId)
+      } else {
+        // When checking, set default rule if not yet chosen
+        setBulkUserRules((rules) => ({
+          ...rules,
+          [userId]: rules[userId] || 'inbound',
+        }))
+        return [...prev, userId]
+      }
+    })
+  }
+
+  const handleSetUserRule = (userId: string, rule: string) => {
+    setBulkUserRules((prev) => ({
+      ...prev,
+      [userId]: rule,
+    }))
   }
 
   const handleSelectAllBulkUsers = () => {
     if (bulkSelectedUserIds.length === eligibleUsers.length) {
       setBulkSelectedUserIds([])
     } else {
-      setBulkSelectedUserIds(eligibleUsers.map((u) => u.id))
+      const allIds = eligibleUsers.map((u) => u.id)
+      setBulkSelectedUserIds(allIds)
+      setBulkUserRules((prev) => {
+        const next = { ...prev }
+        allIds.forEach((id) => {
+          if (!next[id]) next[id] = 'inbound'
+        })
+        return next
+      })
     }
   }
 
-  const handleExecuteBulkUpdate = async () => {
+  // Pre-submit check: Safety Dialog for "Sem Comissão"
+  const handlePreSubmitBulkUpdate = () => {
+    if (selectedCustomerIds.length === 0) return
+
+    // Count how many of the selected customers currently have no_commission_flag = true
+    const selectedCustomersObj = customers.filter((c) => selectedCustomerIds.includes(c.id))
+    const noCommCount = selectedCustomersObj.filter((c) => c.no_commission_flag === true).length
+
+    // Check if the form is activating commission (bulkNoCommission === 'no') OR adding links (bulkSelectedUserIds.length > 0)
+    const isActivatingCommission = bulkNoCommission === 'no'
+    const isAddingLinks = bulkSelectedUserIds.length > 0
+
+    if (noCommCount > 0 && (isActivatingCommission || isAddingLinks)) {
+      setNoCommCustomersCount(noCommCount)
+      setConfirmSafetyOpen(true)
+      return
+    }
+
+    // Otherwise, proceed directly
+    executeBulkUpdate()
+  }
+
+  const executeBulkUpdate = async () => {
     if (selectedCustomerIds.length === 0) return
 
     setBulkSaving(true)
-    const toastId = toast({
+    toast({
       title: 'Atualizando clientes em lote...',
       description: `Aplicando alterações para ${selectedCustomerIds.length} cliente(s) selecionado(s). Aguarde...`,
     })
 
     try {
+      // Build usersWithRules payload for selected users
+      const usersWithRules = bulkSelectedUserIds
+        .filter((uid) => Boolean(bulkUserRules[uid]))
+        .map((uid) => ({
+          user_id: uid,
+          commission_type: bulkUserRules[uid] || 'inbound',
+        }))
+
       const payload: {
         customerIds: string[]
-        origin?: 'inbound' | 'outbound' | null
         noCommissionFlag?: boolean
-        userIds?: string[]
+        usersWithRules?: Array<{ user_id: string; commission_type: string }>
         replaceUsers?: boolean
       } = {
         customerIds: selectedCustomerIds,
-      }
-
-      if (bulkOrigin !== 'keep') {
-        payload.origin = bulkOrigin
       }
 
       if (bulkNoCommission === 'yes') {
@@ -239,10 +303,9 @@ export default function Customers() {
         payload.noCommissionFlag = false
       }
 
-      // Se o usuário selecionou usuários para vincular ou marcou o modo de substituição
-      // (ex: se marcou replace e selecionou 0 usuários, limpa a carteira; ou se selecionou >=1 usuários)
-      if (bulkSelectedUserIds.length > 0 || bulkReplaceUsers) {
-        payload.userIds = bulkSelectedUserIds
+      // If user selected users to link or marked replace mode
+      if (usersWithRules.length > 0 || bulkReplaceUsers) {
+        payload.usersWithRules = usersWithRules
         payload.replaceUsers = bulkReplaceUsers
       }
 
@@ -276,6 +339,7 @@ export default function Customers() {
     setFormStartDate(cust.start_date || '')
     setFormNoCommission(cust.no_commission_flag || false)
     setSelectedUserIdToAdd('')
+    setSelectedRuleToAdd('inbound')
     setSheetOpen(true)
 
     // Refresh full details including customer_users
@@ -390,10 +454,10 @@ export default function Customers() {
 
     setAddingUser(true)
     try {
-      await addUserToCustomer(selectedCustomer.id, selectedUserIdToAdd)
+      await addUserToCustomer(selectedCustomer.id, selectedUserIdToAdd, selectedRuleToAdd)
       toast({
         title: 'Vendedor vinculado!',
-        description: 'Usuário associado com sucesso ao cliente.',
+        description: `Usuário associado com sucesso ao cliente com regra "${selectedRuleToAdd.toUpperCase()}".`,
       })
       setSelectedUserIdToAdd('')
 
@@ -714,6 +778,11 @@ export default function Customers() {
                                   className="text-[11px] bg-slate-50 border-slate-200 text-slate-700 font-medium"
                                 >
                                   {link.user?.name || 'Vendedor'}
+                                  {link.commission_type && (
+                                    <span className="ml-1 text-[10px] text-teal-700 uppercase">
+                                      ({link.commission_type})
+                                    </span>
+                                  )}
                                 </Badge>
                               ))}
                             </div>
@@ -975,6 +1044,12 @@ export default function Customers() {
                         <div className="flex items-center gap-2">
                           <Badge
                             variant="outline"
+                            className="text-[10px] uppercase font-semibold text-teal-800 bg-teal-50 border-teal-200"
+                          >
+                            {link.commission_type || 'inbound'}
+                          </Badge>
+                          <Badge
+                            variant="outline"
                             className="text-[10px] uppercase font-semibold text-slate-600 bg-white"
                           >
                             {u?.role === 'manager' ? 'Gerente' : 'Vendedor'}
@@ -1004,9 +1079,9 @@ export default function Customers() {
             {/* Form to Add New User Link */}
             <div className="pt-3 border-t border-slate-100 space-y-2">
               <Label className="text-xs font-semibold text-slate-700">
-                Vincular Novo Vendedor ou Gerente
+                Vincular Novo Vendedor ou Gerente com Regra
               </Label>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 <Select
                   value={selectedUserIdToAdd}
                   onValueChange={setSelectedUserIdToAdd}
@@ -1017,7 +1092,7 @@ export default function Customers() {
                       placeholder={
                         unlinkedEligibleUsers.length === 0
                           ? 'Todos os usuários disponíveis já estão vinculados'
-                          : 'Selecione o usuário para vincular...'
+                          : 'Selecione o usuário...'
                       }
                     />
                   </SelectTrigger>
@@ -1028,6 +1103,27 @@ export default function Customers() {
                         {user.email}
                       </SelectItem>
                     ))}
+                  </SelectContent>
+                </Select>
+
+                <Select
+                  value={selectedRuleToAdd}
+                  onValueChange={setSelectedRuleToAdd}
+                  disabled={addingUser || !selectedUserIdToAdd}
+                >
+                  <SelectTrigger className="w-full sm:w-36 h-10 border-slate-300 text-xs">
+                    <SelectValue placeholder="Regra..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="inbound" className="text-xs">
+                      Inbound
+                    </SelectItem>
+                    <SelectItem value="outbound" className="text-xs">
+                      Outbound
+                    </SelectItem>
+                    <SelectItem value="fixed" className="text-xs">
+                      Fixo
+                    </SelectItem>
                   </SelectContent>
                 </Select>
 
@@ -1068,35 +1164,152 @@ export default function Customers() {
           </DialogHeader>
 
           <div className="space-y-5 py-3">
-            {/* 1. Origem / Tipo de Comissão */}
-            <div className="space-y-1.5 p-4 rounded-xl border border-slate-200 bg-slate-50/50">
+            {/* 1. Bloco de Usuários (Vincular Vendedores / Gerentes) */}
+            <div className="space-y-3 p-4 rounded-xl border border-slate-200 bg-white shadow-xs">
               <div className="flex items-center justify-between">
-                <Label htmlFor="bulk_origin" className="text-xs font-bold text-slate-800">
-                  Origem / Tipo de Comissão
-                </Label>
-                <span className="text-[11px] text-slate-500">
-                  Define se a comissão é Inbound ou Outbound
-                </span>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <Users className="h-4 w-4 text-[#0F766E]" />
+                    Vincular Vendedores / Gerentes
+                  </h4>
+                  <p className="text-[11px] text-slate-500">
+                    Selecione os responsáveis e especifique a regra de comissionamento individual de
+                    cada um para os {selectedCustomerIds.length} clientes.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleSelectAllBulkUsers}
+                    className="h-7 text-xs text-[#0F766E] hover:text-[#115E59] px-2 font-medium"
+                  >
+                    {bulkSelectedUserIds.length === eligibleUsers.length
+                      ? 'Desmarcar todos'
+                      : 'Selecionar todos'}
+                  </Button>
+                  <Badge variant="outline" className="text-xs font-mono font-bold">
+                    {bulkSelectedUserIds.length} selecionado(s)
+                  </Badge>
+                </div>
               </div>
-              <Select
-                value={bulkOrigin}
-                onValueChange={(val: 'keep' | 'inbound' | 'outbound') => setBulkOrigin(val)}
-              >
-                <SelectTrigger id="bulk_origin" className="h-10 bg-white border-slate-300 text-xs">
-                  <SelectValue placeholder="Selecione..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="keep" className="text-xs">
-                    Não alterar (manter origem atual de cada cliente)
-                  </SelectItem>
-                  <SelectItem value="inbound" className="text-xs">
-                    Inbound (Lead receptivo &bull; Alíquota fixa/vitalícia)
-                  </SelectItem>
-                  <SelectItem value="outbound" className="text-xs">
-                    Outbound (Prospecção ativa &bull; Alíquota 1º ano vs 2º ano+)
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+
+              <div className="max-h-72 overflow-y-auto space-y-2 border border-slate-200 rounded-lg p-2.5 bg-slate-50/40">
+                {eligibleUsers.length === 0 ? (
+                  <p className="text-xs text-slate-400 p-2 text-center">
+                    Nenhum usuário com papel manager ou sales encontrado.
+                  </p>
+                ) : (
+                  eligibleUsers.map((user) => {
+                    const isChecked = bulkSelectedUserIds.includes(user.id)
+                    const userRule = bulkUserRules[user.id] || 'inbound'
+
+                    return (
+                      <div
+                        key={user.id}
+                        className={`rounded-lg border transition-all ${
+                          isChecked
+                            ? 'bg-teal-50/60 border-teal-300 shadow-xs'
+                            : 'bg-white border-slate-200 hover:bg-slate-100/60'
+                        }`}
+                      >
+                        <div
+                          onClick={() => handleToggleBulkUser(user.id)}
+                          className="flex items-center justify-between p-3 cursor-pointer select-none"
+                        >
+                          <div className="flex items-center gap-3">
+                            <Checkbox
+                              checked={isChecked}
+                              onCheckedChange={() => handleToggleBulkUser(user.id)}
+                              onClick={(e) => e.stopPropagation()}
+                              aria-label={`Selecionar ${user.name}`}
+                            />
+                            <div>
+                              <p className="text-xs font-semibold text-slate-900">{user.name}</p>
+                              <p className="text-[11px] text-slate-500">{user.email}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] uppercase font-semibold text-slate-600 bg-white"
+                            >
+                              {user.role === 'manager' ? 'Gerente' : 'Vendedor'}
+                            </Badge>
+                          </div>
+                        </div>
+
+                        {/* Seleção de Perfil (NOVO): Expandido quando o usuário está marcado */}
+                        {isChecked && (
+                          <div
+                            className="px-3 pb-3 pt-1 border-t border-teal-100/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-teal-100/30 rounded-b-lg animate-in fade-in slide-in-from-top-1 duration-150"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Label
+                              htmlFor={`rule-select-${user.id}`}
+                              className="text-xs font-semibold text-teal-950 flex items-center gap-1"
+                            >
+                              <span>Qual regra aplicar?</span>
+                              <span className="text-rose-500">*</span>
+                            </Label>
+                            <Select
+                              value={userRule}
+                              onValueChange={(val) => handleSetUserRule(user.id, val)}
+                            >
+                              <SelectTrigger
+                                id={`rule-select-${user.id}`}
+                                className="w-full sm:w-56 h-8 text-xs bg-white border-teal-300 font-medium focus:ring-teal-500"
+                              >
+                                <SelectValue placeholder="Selecione a regra..." />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="inbound" className="text-xs">
+                                  Inbound (Lead receptivo &bull; Alíquota fixa)
+                                </SelectItem>
+                                <SelectItem value="outbound" className="text-xs">
+                                  Outbound (Prospecção ativa &bull; 1º vs 2º ano)
+                                </SelectItem>
+                                <SelectItem value="fixed" className="text-xs">
+                                  Fixo (Regra fixa de comissão)
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+
+              {/* Modo de Substituição */}
+              <div className="mt-3 p-3.5 rounded-lg border border-amber-200 bg-amber-50/70 space-y-2">
+                <div className="flex items-start gap-3">
+                  <Checkbox
+                    id="bulk_replace"
+                    checked={bulkReplaceUsers}
+                    onCheckedChange={(checked) => setBulkReplaceUsers(checked === true)}
+                    className="mt-0.5 border-amber-400 data-[state=checked]:bg-amber-700 data-[state=checked]:border-amber-700"
+                  />
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="bulk_replace"
+                      className="text-xs font-bold text-amber-950 cursor-pointer flex items-center gap-1.5"
+                    >
+                      <AlertCircle className="h-3.5 w-3.5 text-amber-600" />
+                      Substituir carteira existente?
+                    </Label>
+                    <p className="text-[11px] text-amber-900 leading-relaxed">
+                      <strong>Marcado:</strong> apaga os vínculos antigos destes clientes e insere
+                      apenas os novos selecionados acima com suas respectivas regras.
+                      <br />
+                      <strong>Desmarcado:</strong> apenas adiciona ou atualiza os vínculos para os
+                      vendedores selecionados, preservando os outros que já estavam vinculados.
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* 2. Flag Sem Comissão (opcional) */}
@@ -1119,116 +1332,13 @@ export default function Customers() {
                     Não alterar (manter status atual de cada cliente)
                   </SelectItem>
                   <SelectItem value="no" className="text-xs">
-                    Comissão Ativa (não dispensado)
+                    Ativar Comissão (clientes voltam a gerar comissões)
                   </SelectItem>
                   <SelectItem value="yes" className="text-xs">
                     Dispensar de Comissão (Sem comissão para nenhum mês)
                   </SelectItem>
                 </SelectContent>
               </Select>
-            </div>
-
-            {/* 3. Vincular Vendedores / Gerentes */}
-            <div className="space-y-3 p-4 rounded-xl border border-slate-200 bg-white shadow-xs">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                    <Users className="h-4 w-4 text-[#0F766E]" />
-                    Vincular Vendedores / Gerentes
-                  </h4>
-                  <p className="text-[11px] text-slate-500">
-                    Selecione os responsáveis para atribuir a todos os {selectedCustomerIds.length}{' '}
-                    clientes.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleSelectAllBulkUsers}
-                    className="h-7 text-xs text-[#0F766E] hover:text-[#115E59] px-2 font-medium"
-                  >
-                    {bulkSelectedUserIds.length === eligibleUsers.length
-                      ? 'Desmarcar todos'
-                      : 'Selecionar todos'}
-                  </Button>
-                  <Badge variant="outline" className="text-xs font-mono font-bold">
-                    {bulkSelectedUserIds.length} selecionado(s)
-                  </Badge>
-                </div>
-              </div>
-
-              <div className="max-h-56 overflow-y-auto space-y-1.5 border border-slate-200 rounded-lg p-2 bg-slate-50/40">
-                {eligibleUsers.length === 0 ? (
-                  <p className="text-xs text-slate-400 p-2 text-center">
-                    Nenhum usuário com papel manager ou sales encontrado.
-                  </p>
-                ) : (
-                  eligibleUsers.map((user) => {
-                    const isChecked = bulkSelectedUserIds.includes(user.id)
-                    return (
-                      <div
-                        key={user.id}
-                        onClick={() => handleToggleBulkUser(user.id)}
-                        className={`flex items-center justify-between p-2.5 rounded-md border cursor-pointer transition-colors ${
-                          isChecked
-                            ? 'bg-teal-50/80 border-teal-300 text-slate-900'
-                            : 'bg-white border-slate-200 hover:bg-slate-100/70 text-slate-700'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <Checkbox
-                            checked={isChecked}
-                            onCheckedChange={() => handleToggleBulkUser(user.id)}
-                            onClick={(e) => e.stopPropagation()}
-                            aria-label={`Selecionar ${user.name}`}
-                          />
-                          <div>
-                            <p className="text-xs font-semibold">{user.name}</p>
-                            <p className="text-[11px] text-slate-500">{user.email}</p>
-                          </div>
-                        </div>
-                        <Badge
-                          variant="outline"
-                          className="text-[10px] uppercase font-semibold text-slate-600 bg-white"
-                        >
-                          {user.role === 'manager' ? 'Gerente' : 'Vendedor'}
-                        </Badge>
-                      </div>
-                    )
-                  })
-                )}
-              </div>
-
-              {/* 4. Ação Crítica: Modo de Substituição */}
-              <div className="mt-3 p-3.5 rounded-lg border border-amber-200 bg-amber-50/70 space-y-2">
-                <div className="flex items-start gap-3">
-                  <Checkbox
-                    id="bulk_replace"
-                    checked={bulkReplaceUsers}
-                    onCheckedChange={(checked) => setBulkReplaceUsers(checked === true)}
-                    className="mt-0.5 border-amber-400 data-[state=checked]:bg-amber-700 data-[state=checked]:border-amber-700"
-                  />
-                  <div className="space-y-1">
-                    <Label
-                      htmlFor="bulk_replace"
-                      className="text-xs font-bold text-amber-950 cursor-pointer flex items-center gap-1.5"
-                    >
-                      <AlertCircle className="h-3.5 w-3.5 text-amber-600" />
-                      Substituir carteira existente?
-                    </Label>
-                    <p className="text-[11px] text-amber-900 leading-relaxed">
-                      <strong>Marcado:</strong> apaga os vínculos antigos destes clientes e insere
-                      apenas os novos selecionados acima (ideal para reatribuição de carteira
-                      inteira a um novo executivo/gerente).
-                      <br />
-                      <strong>Desmarcado:</strong> apenas adiciona os novos vendedores aos vínculos
-                      já existentes, sem remover quem já estava vinculado.
-                    </p>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -1248,11 +1358,10 @@ export default function Customers() {
               </Button>
               <Button
                 size="sm"
-                onClick={handleExecuteBulkUpdate}
+                onClick={handlePreSubmitBulkUpdate}
                 disabled={
                   bulkSaving ||
-                  (bulkOrigin === 'keep' &&
-                    bulkNoCommission === 'keep' &&
+                  (bulkNoCommission === 'keep' &&
                     bulkSelectedUserIds.length === 0 &&
                     !bulkReplaceUsers)
                 }
@@ -1274,6 +1383,36 @@ export default function Customers() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ALERT DIALOG: TRAVA DE CONFIRMAÇÃO PARA CLIENTES "SEM COMISSÃO" */}
+      <AlertDialog open={confirmSafetyOpen} onOpenChange={setConfirmSafetyOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-amber-600">
+              <AlertCircle className="h-5 w-5" />
+              Confirmação de Segurança
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-sm text-slate-700 pt-2 leading-relaxed">
+              Atenção! Você selecionou {noCommCustomersCount} cliente(s) que atualmente estão
+              marcados como 'Sem Comissão'. Tem a certeza de que deseja ativar a comissão e aplicar
+              os novos vínculos para eles?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkSaving}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={bulkSaving}
+              onClick={() => {
+                setConfirmSafetyOpen(false)
+                executeBulkUpdate()
+              }}
+              className="bg-[#0F766E] hover:bg-[#115E59] text-white"
+            >
+              Sim, continuar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
