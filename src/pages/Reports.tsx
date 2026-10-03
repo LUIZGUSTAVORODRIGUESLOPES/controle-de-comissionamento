@@ -38,7 +38,34 @@ import {
   ArrowRight,
   Check,
   RotateCw,
+  Mail,
+  Send,
+  FileText,
+  TableProperties,
+  ListFilter,
+  Loader2,
+  FileDown,
 } from 'lucide-react'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  exportToCSV,
+  exportToXLSX,
+  exportToPDF,
+  SummaryRow,
+  DetailedRow,
+  ExportDataPayload,
+} from '@/lib/exportUtils'
+import { getSystemSettings, sendCommissionReports } from '@/services/commissionService'
+import type { SystemSettings } from '@/types/database'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -88,6 +115,8 @@ import { format, parseISO, isValid } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 
 type ViewMode = 'month' | 'period'
+type ReportViewType = 'summary' | 'detailed'
+type OriginFilterType = 'all' | 'inbound' | 'outbound'
 
 export default function Reports() {
   const { user, appUser } = useAuth()
@@ -96,9 +125,15 @@ export default function Reports() {
   const [loading, setLoading] = useState(true)
   const [runs, setRuns] = useState<MonthlyRun[]>([])
   const [allUsers, setAllUsers] = useState<AppUser[]>([])
+  const [companySettings, setCompanySettings] = useState<SystemSettings | null>(null)
 
   // View mode: 'month' or 'period'
   const [viewMode, setViewMode] = useState<ViewMode>('month')
+
+  // New Filters
+  const [reportViewType, setReportViewType] = useState<ReportViewType>('summary')
+  const [originFilter, setOriginFilter] = useState<OriginFilterType>('all')
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]) // Multi-select users
 
   // Selected Month (for 'month' mode)
   const [selectedRunId, setSelectedRunId] = useState<string>('')
@@ -107,7 +142,7 @@ export default function Reports() {
   const [periodStartDate, setPeriodStartDate] = useState<string>('2026-01-01')
   const [periodEndDate, setPeriodEndDate] = useState<string>('2026-12-31')
 
-  // Seller Filter: 'all' or userId
+  // Seller Filter: 'all' or userId (legacy single filter, synced with multi-select)
   const [selectedSellerId, setSelectedSellerId] = useState<string>('all')
 
   // Data loaded for the active view
@@ -127,6 +162,10 @@ export default function Reports() {
   const [unlocking, setUnlocking] = useState(false)
   const [unlockError, setUnlockError] = useState<string | null>(null)
 
+  // Email dispatching state
+  const [dispatchingEmail, setDispatchingEmail] = useState(false)
+  const [exportingType, setExportingType] = useState<'csv' | 'xlsx' | 'pdf' | null>(null)
+
   const isSales = appUser?.role === 'sales'
   const isAdmin = appUser?.role === 'admin'
 
@@ -141,12 +180,19 @@ export default function Reports() {
   const loadInitialData = async (preferredRunId?: string) => {
     setLoading(true)
     try {
-      const [runsData, usersData] = await Promise.all([getMonthlyRuns(), getAllUsers()])
+      const [runsData, usersData, settingsData] = await Promise.all([
+        getMonthlyRuns(),
+        getAllUsers(),
+        getSystemSettings(),
+      ])
 
       // Include runs that are processed or paid (fechados)
       const visibleRuns = runsData.filter((r) => r.status === 'processed' || r.status === 'paid')
       setRuns(visibleRuns)
       setAllUsers(usersData)
+      if (settingsData) {
+        setCompanySettings(settingsData)
+      }
 
       if (visibleRuns.length > 0) {
         const targetRun = preferredRunId
@@ -351,53 +397,81 @@ export default function Reports() {
   // ----------------------------------------------------
   // FILTERING & AGGREGATION LOGIC
   // ----------------------------------------------------
-  // When a specific seller is selected:
-  // - Billings: only billings from customers associated with this seller OR billings where this seller has commission
-  // - Commissions: only commissions where c.user_id === selectedSellerId
-  // - Payroll table: only this seller
-  // - Fixed Salary:
-  //     In 'month' mode: fixed salary of this seller (1 month)
-  //     In 'period' mode: fixed salary for each distinct month where this seller had commissions or was active in the period runs
-  const isSellerFiltered = selectedSellerId !== 'all'
-  const activeSellerUser = isSellerFiltered ? allUsers.find((u) => u.id === selectedSellerId) : null
+  // Multi-select or single seller filter
+  const activeSelectedUserIds = useMemo(() => {
+    if (isSales && appUser?.id) return [appUser.id]
+    if (selectedUserIds.length > 0) return selectedUserIds
+    if (selectedSellerId !== 'all') return [selectedSellerId]
+    return []
+  }, [isSales, appUser?.id, selectedUserIds, selectedSellerId])
 
-  // Active commissions based on seller filter
+  const isSellerFiltered = activeSelectedUserIds.length > 0
+  const activeSellerUser =
+    isSellerFiltered && activeSelectedUserIds.length === 1
+      ? allUsers.find((u) => u.id === activeSelectedUserIds[0])
+      : null
+
+  // Active commissions based on seller filter & customer origin
   const displayedCommissions = useMemo(() => {
-    if (!isSellerFiltered) return commissions
-    return commissions.filter((c) => c.user_id === selectedSellerId)
-  }, [commissions, isSellerFiltered, selectedSellerId])
-
-  // Active billings based on seller filter
-  // When seller is filtered: billings that generated commissions for him (or where his customer was billed)
-  const displayedBillings = useMemo(() => {
-    if (!isSellerFiltered) return billings
-    const sellerBillingIds = new Set(displayedCommissions.map((c) => c.billing_id))
-    return billings.filter((b) => {
-      if (sellerBillingIds.has(b.id)) return true
-      const custLinks = b.customer?.customer_users || []
-      return custLinks.some((cu) => cu.user_id === selectedSellerId)
+    return commissions.filter((c) => {
+      // Seller filter
+      if (activeSelectedUserIds.length > 0 && !activeSelectedUserIds.includes(c.user_id)) {
+        return false
+      }
+      // Customer origin filter
+      if (originFilter !== 'all') {
+        const custOrigin = c.billing?.customer?.origin?.toLowerCase()
+        if (custOrigin !== originFilter) return false
+      }
+      return true
     })
-  }, [billings, displayedCommissions, isSellerFiltered, selectedSellerId])
+  }, [commissions, activeSelectedUserIds, originFilter])
 
-  // Group commissions by user for the payroll table
-  // In period mode: fixed salary must be multiplied by the number of months the user had apuração/comissões (or distinct runs in the period if fixed salary > 0)
+  // Active billings based on seller filter & origin filter
+  const displayedBillings = useMemo(() => {
+    return billings.filter((b) => {
+      // Origin filter
+      if (originFilter !== 'all') {
+        const custOrigin = b.customer?.origin?.toLowerCase()
+        if (custOrigin !== originFilter) return false
+      }
+      // Seller filter
+      if (activeSelectedUserIds.length > 0) {
+        const hasMatchingComm = displayedCommissions.some((c) => c.billing_id === b.id)
+        if (hasMatchingComm) return true
+        const custLinks = b.customer?.customer_users || []
+        return custLinks.some((cu) => activeSelectedUserIds.includes(cu.user_id))
+      }
+      return true
+    })
+  }, [billings, displayedCommissions, activeSelectedUserIds, originFilter])
+
+  // Group commissions by user for the payroll table & summary view
   const usersWithCommissions = useMemo(() => {
-    const targetUsers = isSellerFiltered && activeSellerUser ? [activeSellerUser] : allUsers
+    const targetUsers =
+      activeSelectedUserIds.length > 0
+        ? allUsers.filter((u) => activeSelectedUserIds.includes(u.id))
+        : allUsers
 
     return targetUsers
       .map((u) => {
-        const userCommissions = commissions.filter((c) => c.user_id === u.id)
+        const userCommissions = displayedCommissions.filter((c) => c.user_id === u.id)
         const totalComm = userCommissions.reduce((acc, c) => acc + Number(c.commission_amount), 0)
+
+        // Calculate user gross & net
+        let userGross = 0
+        let userNet = 0
+        userCommissions.forEach((c) => {
+          userGross += Number(c.billing?.gross_amount) || 0
+          userNet += Number(c.billing?.net_amount) || 0
+        })
 
         // Calculate how many months apply for fixed salary
         let monthsMultiplier = 1
         if (viewMode === 'period') {
-          // Rule: sum fixed salary for EACH month of the period where there is a processed run
-          // If the user had commissions, count months of those runs, or total period runs if active
           const runMonthsWithCommissions = new Set(
             userCommissions.map((c) => c.billing?.monthly_run_id).filter(Boolean) as string[],
           )
-          // Count at least the months where he had commissions, or all period runs if he has a fixed salary > 0
           monthsMultiplier = Math.max(
             runMonthsWithCommissions.size,
             u.fixed_salary > 0 ? distinctMonthsInPeriod : 0,
@@ -409,6 +483,8 @@ export default function Reports() {
 
         return {
           user: u,
+          grossTotal: userGross,
+          netTotal: userNet,
           fixedSalary: fixed,
           monthsCount: monthsMultiplier,
           commissionsTotal: totalComm,
@@ -418,7 +494,7 @@ export default function Reports() {
       })
       .filter((item) => item.fixedSalary > 0 || item.commissionsTotal > 0)
       .sort((a, b) => b.totalPayable - a.totalPayable)
-  }, [allUsers, commissions, isSellerFiltered, activeSellerUser, viewMode, distinctMonthsInPeriod])
+  }, [allUsers, displayedCommissions, activeSelectedUserIds, viewMode, distinctMonthsInPeriod])
 
   // Totals for the cards
   const companyGross = useMemo(() => {
@@ -683,58 +759,162 @@ export default function Reports() {
     }
   }
 
-  // Export CSV (supports Month or Period mode, with or without seller filter)
-  const handleExportCSV = () => {
-    let filename = ''
-    let csv = ''
+  // Detailed Rows prepared for View and Export
+  const detailedViewRows = useMemo<DetailedRow[]>(() => {
+    return displayedCommissions.map((c) => {
+      const bill = c.billing
+      const cust = bill?.customer
+      const seller = allUsers.find((u) => u.id === c.user_id)
+      const run = runByIdMap.get(bill?.monthly_run_id || '')
 
-    if (viewMode === 'month') {
-      filename = `folha_comissoes_${selectedRun?.month_year || 'mes'}`
-    } else {
-      filename = `folha_comissoes_periodo_${periodStartDate}_a_${periodEndDate}`
-    }
+      const gross = Number(bill?.gross_amount) || 0
+      const net = Number(bill?.net_amount) || 0
+      const taxesDeducted = Math.max(0, gross - net)
 
-    if (isSellerFiltered && activeSellerUser) {
-      filename += `_${activeSellerUser.name.toLowerCase().replace(/\s+/g, '_')}`
-    }
+      const appliedTaxes = (bill?.tax_deductions_applied_json || []) as any[]
+      const taxDetailsStr =
+        appliedTaxes.length > 0
+          ? appliedTaxes.map((t) => `${t.name}: ${formatBRL(Number(t.deducted) || 0)}`).join(' | ')
+          : 'Sem deduções'
 
-    if (isSellerFiltered && activeSellerUser) {
-      // Detailed single seller export
-      csv = `Relatório de Comissões - ${activeSellerUser.name} (${activeSellerUser.role})\n`
-      csv += `Modo: ${viewMode === 'month' ? formatMonth(selectedRun?.month_year) : `Período ${formatDateDisplay(periodStartDate)} a ${formatDateDisplay(periodEndDate)}`}\n`
-      csv += `Salário Fixo Total: ${formatBRL(companyTotalFixed)}\n\n`
-      csv += `Mês de Competência,Código Cliente,Nome Cliente,Faturamento Bruto,Base Líquida,% Comissão,Valor Comissão\n`
-
-      displayedCommissions.forEach((c) => {
-        const run = runByIdMap.get(c.billing?.monthly_run_id || '')
-        const monthLabel = formatMonth(run?.month_year)
-        const cust = c.billing?.customer
-        csv += `"${monthLabel}","${cust?.customer_code || ''}","${cust?.name || ''}",${Number(c.billing?.gross_amount || 0).toFixed(2)},${Number(c.billing?.net_amount || 0).toFixed(2)},${c.percentage_applied}%,${Number(c.commission_amount || 0).toFixed(2)}\n`
-      })
-
-      csv += `\n"TOTAL COMISSÕES","","",,,"",${companyTotalCommissions.toFixed(2)}\n`
-      csv += `"TOTAL A PAGAR (FIXO + COMISSÕES)","","",,,"",${companyGrandTotal.toFixed(2)}\n`
-    } else {
-      // General payroll export
-      csv = `Folha de Comissões - ${viewMode === 'month' ? formatMonth(selectedRun?.month_year) : `Período ${formatDateDisplay(periodStartDate)} a ${formatDateDisplay(periodEndDate)}`}\n\n`
-      csv += 'Vendedor,Cargo,Salário Fixo,Comissões,Total a Pagar\n'
-      usersWithCommissions.forEach((item) => {
-        csv += `"${item.user.name}","${item.user.role}",${item.fixedSalary.toFixed(2)},${item.commissionsTotal.toFixed(2)},${item.totalPayable.toFixed(2)}\n`
-      })
-      csv += `\n"TOTAL CONSOLIDADO","",${companyTotalFixed.toFixed(2)},${companyTotalCommissions.toFixed(2)},${companyGrandTotal.toFixed(2)}\n`
-    }
-
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${filename}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-    toast({
-      title: 'CSV Exportado',
-      description: 'O arquivo consolidado foi gerado com sucesso.',
+      return {
+        sellerName: seller?.name || 'Vendedor',
+        competenceMonth: formatMonth(run?.month_year),
+        customerCode: cust?.customer_code || '-',
+        customerName: cust?.name || 'Cliente sem nome',
+        origin: cust?.origin || 'outbound',
+        grossAmount: gross,
+        taxesDeducted,
+        taxDetails: taxDetailsStr,
+        netAmount: net,
+        commissionPct: Number(c.percentage_applied) || 0,
+        commissionAmount: Number(c.commission_amount) || 0,
+      }
     })
+  }, [displayedCommissions, allUsers, runByIdMap])
+
+  // Summary Rows prepared for View and Export
+  const summaryViewRows = useMemo<SummaryRow[]>(() => {
+    return usersWithCommissions.map((row) => ({
+      sellerName: row.user.name,
+      role: row.user.role,
+      grossTotal: row.grossTotal,
+      netTotal: row.netTotal,
+      commissionTotal: row.commissionsTotal,
+      fixedSalary: row.fixedSalary,
+      totalPayable: row.totalPayable,
+    }))
+  }, [usersWithCommissions])
+
+  // Prepare Export Payload according to current screen filters
+  const getExportPayload = (): ExportDataPayload => {
+    const periodTitle =
+      viewMode === 'month'
+        ? formatMonth(selectedRun?.month_year)
+        : `${formatDateDisplay(periodStartDate)} até ${formatDateDisplay(periodEndDate)}`
+
+    return {
+      viewType: reportViewType,
+      periodTitle,
+      companySettings,
+      summaryRows: summaryViewRows,
+      detailedRows: detailedViewRows,
+      totals: {
+        gross: companyGross,
+        net: companyNet,
+        taxes: companyTaxes,
+        commissions: companyTotalCommissions,
+        fixed: companyTotalFixed,
+        grandTotal: companyGrandTotal,
+      },
+    }
+  }
+
+  // Export Handlers
+  const handleExportCSVAction = () => {
+    setExportingType('csv')
+    try {
+      const payload = getExportPayload()
+      const filename = `comissoes_${reportViewType}_${viewMode === 'month' ? selectedRun?.month_year || 'mes' : 'periodo'}`
+      exportToCSV(payload, filename)
+      sonnerToast.success('Exportação CSV concluída!')
+    } catch (err: any) {
+      console.error(err)
+      sonnerToast.error('Erro ao exportar CSV', { description: err.message })
+    } finally {
+      setExportingType(null)
+    }
+  }
+
+  const handleExportXLSXAction = () => {
+    setExportingType('xlsx')
+    try {
+      const payload = getExportPayload()
+      const filename = `comissoes_${reportViewType}_${viewMode === 'month' ? selectedRun?.month_year || 'mes' : 'periodo'}`
+      exportToXLSX(payload, filename)
+      sonnerToast.success('Planilha Excel (XLSX) gerada com sucesso!')
+    } catch (err: any) {
+      console.error(err)
+      sonnerToast.error('Erro ao exportar XLSX', { description: err.message })
+    } finally {
+      setExportingType(null)
+    }
+  }
+
+  const handleExportPDFAction = async () => {
+    setExportingType('pdf')
+    const tId = sonnerToast.loading('Renderizando documento PDF com logo e cabeçalho...')
+    try {
+      const payload = getExportPayload()
+      const filename = `relatorio_comissoes_${reportViewType}_${viewMode === 'month' ? selectedRun?.month_year || 'mes' : 'periodo'}`
+      await exportToPDF(payload, filename)
+      sonnerToast.success('Relatório PDF exportado com sucesso!', { id: tId })
+    } catch (err: any) {
+      console.error(err)
+      sonnerToast.error('Erro ao gerar PDF', { id: tId, description: err.message })
+    } finally {
+      setExportingType(null)
+    }
+  }
+
+  // Trigger Send Reports by Email (calls Edge Function)
+  const handleSendReportsByEmail = async () => {
+    setDispatchingEmail(true)
+    const tId = sonnerToast.loading(
+      'Verificando preferências de colaboradores e disparando extratos por e-mail...',
+    )
+    try {
+      const targetUserIdsParam =
+        activeSelectedUserIds.length > 0 ? activeSelectedUserIds : undefined
+      const targetRunIdParam = viewMode === 'month' ? selectedRunId : undefined
+
+      const result = await sendCommissionReports({
+        monthlyRunId: targetRunIdParam,
+        userIds: targetUserIdsParam,
+      })
+
+      if (result.simulated) {
+        sonnerToast.info('Disparo Simulado com Sucesso', {
+          id: tId,
+          description: result.message,
+          duration: 8000,
+        })
+      } else {
+        sonnerToast.success('E-mails Disparados com Sucesso!', {
+          id: tId,
+          description: result.message || 'Extratos de comissão enviados via Resend.',
+          duration: 6000,
+        })
+      }
+    } catch (err: any) {
+      console.error('Falha ao disparar e-mails:', err)
+      sonnerToast.error('Erro no envio de e-mails', {
+        id: tId,
+        description: err.message || 'Falha ao acionar a Edge Function.',
+      })
+    } finally {
+      setDispatchingEmail(false)
+    }
   }
 
   // Print Payslip
@@ -817,53 +997,126 @@ export default function Reports() {
             </p>
           </div>
 
-          {/* Action buttons (Export / Print / Close Month / Unlock) */}
+          {/* Action buttons (Disparar E-mails / Exportar Dropdown / Recalcular / Fechar Mês / Print) */}
           <div className="flex flex-wrap items-center gap-2.5">
-            {/* Compliance & Recalculation actions visible ONLY in Month mode */}
-            {viewMode === 'month' && !isSales && (
-              <>
-                {/* Recalculate button: visible for pending and processed months (hidden if paid) */}
-                {(selectedRun?.status === 'pending' || selectedRun?.status === 'processed') && (
-                  <Button
-                    onClick={() => setConfirmRecalculateOpen(true)}
-                    disabled={recalculating}
-                    variant="outline"
-                    className="border-teal-600 text-[#0F766E] hover:bg-teal-50 font-semibold flex items-center gap-2 h-10 px-4 shadow-xs"
-                    title="Recalcula comissões lendo as regras e vínculos atuais do banco"
-                  >
-                    <RotateCw className={`h-4 w-4 ${recalculating ? 'animate-spin' : ''}`} />
-                    <span>{recalculating ? 'Recalculando...' : 'Recalcular Comissões'}</span>
-                  </Button>
+            {/* Disparar Relatórios por E-mail */}
+            {!isSales && (
+              <Button
+                onClick={handleSendReportsByEmail}
+                disabled={dispatchingEmail}
+                variant="outline"
+                className="border-teal-600 text-[#0F766E] hover:bg-teal-50 font-semibold flex items-center gap-2 h-10 px-4 shadow-xs"
+                title="Envia extratos por e-mail aos colaboradores conforme preferências cadastradas"
+              >
+                {dispatchingEmail ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-[#0F766E]" />
+                ) : (
+                  <Send className="h-4 w-4 text-[#0F766E]" />
                 )}
-
-                {selectedRun?.status === 'processed' && (
-                  <Button
-                    onClick={() => setConfirmPaidOpen(true)}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center gap-2 h-10 px-4 shadow-sm"
-                  >
-                    <Lock className="h-4 w-4" />
-                    <span>Fechar Mês e Marcar como Pago</span>
-                  </Button>
-                )}
-
-                {selectedRun?.status === 'paid' && isAdmin && (
-                  <Button
-                    onClick={() => {
-                      setUnlockError(null)
-                      setAdminPassword('')
-                      setUnlockModalOpen(true)
-                    }}
-                    variant="outline"
-                    className="border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 font-semibold flex items-center gap-2 h-10 px-4"
-                  >
-                    <Unlock className="h-4 w-4 text-amber-700" />
-                    <span>Desbloquear Mês (Estorno)</span>
-                  </Button>
-                )}
-              </>
+                <span>{dispatchingEmail ? 'Disparando...' : 'Disparar Relatórios por E-mail'}</span>
+              </Button>
             )}
 
-            {isSales ? (
+            {/* Recalcular button: visible for pending and processed months (hidden if paid) */}
+            {viewMode === 'month' &&
+              !isSales &&
+              (selectedRun?.status === 'pending' || selectedRun?.status === 'processed') && (
+                <Button
+                  onClick={() => setConfirmRecalculateOpen(true)}
+                  disabled={recalculating}
+                  variant="outline"
+                  className="border-slate-300 text-slate-700 hover:bg-slate-50 font-semibold flex items-center gap-2 h-10 px-4 shadow-xs"
+                  title="Recalcula comissões lendo as regras e vínculos atuais do banco"
+                >
+                  <RotateCw className={`h-4 w-4 ${recalculating ? 'animate-spin' : ''}`} />
+                  <span>{recalculating ? 'Recalculando...' : 'Recalcular Comissões'}</span>
+                </Button>
+              )}
+
+            {/* Fechar Mês e Marcar como Pago */}
+            {viewMode === 'month' && !isSales && selectedRun?.status === 'processed' && (
+              <Button
+                onClick={() => setConfirmPaidOpen(true)}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center gap-2 h-10 px-4 shadow-sm"
+              >
+                <Lock className="h-4 w-4" />
+                <span>Fechar Mês e Marcar como Pago</span>
+              </Button>
+            )}
+
+            {/* Desbloquear Mês (Estorno) */}
+            {viewMode === 'month' && !isSales && selectedRun?.status === 'paid' && isAdmin && (
+              <Button
+                onClick={() => {
+                  setUnlockError(null)
+                  setAdminPassword('')
+                  setUnlockModalOpen(true)
+                }}
+                variant="outline"
+                className="border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 font-semibold flex items-center gap-2 h-10 px-4"
+              >
+                <Unlock className="h-4 w-4 text-amber-700" />
+                <span>Desbloquear Mês (Estorno)</span>
+              </Button>
+            )}
+
+            {/* Exportar com DropdownMenu (CSV, XLSX, PDF) */}
+            {!isSales ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    className="bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold flex items-center gap-2 h-10 px-4 shadow-sm"
+                    disabled={exportingType !== null}
+                  >
+                    {exportingType ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Download className="h-4 w-4" />
+                    )}
+                    <span>Exportar</span>
+                    <ChevronDown className="h-3.5 w-3.5 opacity-80" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56 p-1.5">
+                  <DropdownMenuLabel className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                    Formatos Disponíveis
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={handleExportPDFAction}
+                    className="cursor-pointer flex items-center gap-2 py-2 text-xs font-medium text-slate-800 focus:bg-teal-50 focus:text-teal-900"
+                  >
+                    <FileText className="h-4 w-4 text-rose-600" />
+                    <div>
+                      <p className="font-semibold">Exportar PDF</p>
+                      <p className="text-[10px] text-slate-500">Com logo da empresa e cabeçalho</p>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={handleExportXLSXAction}
+                    className="cursor-pointer flex items-center gap-2 py-2 text-xs font-medium text-slate-800 focus:bg-teal-50 focus:text-teal-900"
+                  >
+                    <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                    <div>
+                      <p className="font-semibold">Exportar XLSX (Excel)</p>
+                      <p className="text-[10px] text-slate-500">Planilha formatada com filtros</p>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={handleExportCSVAction}
+                    className="cursor-pointer flex items-center gap-2 py-2 text-xs font-medium text-slate-800 focus:bg-teal-50 focus:text-teal-900"
+                  >
+                    <Download className="h-4 w-4 text-[#0F766E]" />
+                    <div>
+                      <p className="font-semibold">Exportar CSV</p>
+                      <p className="text-[10px] text-slate-500">
+                        Arquivo de texto delimitado por vírgula
+                      </p>
+                    </div>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
               <Button
                 onClick={handlePrint}
                 className="bg-[#0F766E] hover:bg-[#115E59] text-white flex items-center gap-2 h-10"
@@ -871,34 +1124,64 @@ export default function Reports() {
                 <Printer className="h-4 w-4" />
                 <span>Imprimir Holerite</span>
               </Button>
-            ) : (
-              <Button
-                onClick={handleExportCSV}
-                variant="outline"
-                className="border-slate-300 text-slate-700 hover:bg-slate-50 flex items-center gap-2 h-10"
-              >
-                <Download className="h-4 w-4 text-[#0F766E]" />
-                <span>Exportar CSV</span>
-              </Button>
             )}
           </div>
         </div>
 
-        {/* Filter Toolbar: View Mode Toggle + Month/Period Selector + Seller Filter */}
-        <div className="pt-4 border-t border-slate-100 flex flex-col md:flex-row md:items-end justify-between gap-4">
-          <div className="flex flex-wrap items-end gap-4">
-            {/* 1. Mode Segmented Control */}
+        {/* =========================================================================
+            PAINEL DE FILTROS AVANÇADOS (Competência, Multi-select Vendedores, Origem, Tipo de Visão)
+           ========================================================================= */}
+        <div className="pt-4 border-t border-slate-200/80 rounded-xl bg-slate-50/80 p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700">
+              <ListFilter className="h-4 w-4 text-[#0F766E]" />
+              <span>Painel de Filtros Avançados</span>
+            </div>
+
+            {/* ToggleGroup: Tipo de Visão (Resumida ou Detalhada) */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-slate-600">Tipo de Visão:</span>
+              <ToggleGroup
+                type="single"
+                value={reportViewType}
+                onValueChange={(val) => {
+                  if (val === 'summary' || val === 'detailed') setReportViewType(val)
+                }}
+                className="bg-white border border-slate-200 rounded-lg p-0.5 shadow-2xs"
+              >
+                <ToggleGroupItem
+                  value="summary"
+                  aria-label="Visão Resumida"
+                  className="px-3 py-1.5 text-xs font-semibold data-[state=on]:bg-[#0F766E] data-[state=on]:text-white rounded-md transition-all gap-1.5"
+                >
+                  <TableProperties className="h-3.5 w-3.5" />
+                  <span>Resumida</span>
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  value="detailed"
+                  aria-label="Visão Detalhada"
+                  className="px-3 py-1.5 text-xs font-semibold data-[state=on]:bg-[#0F766E] data-[state=on]:text-white rounded-md transition-all gap-1.5"
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  <span>Detalhada</span>
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* 1. Modo de Seleção de Tempo (Mês vs Período) */}
             <div className="space-y-1.5">
               <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
-                Modo de Visualização
+                Modo de Tempo
               </Label>
-              <div className="inline-flex p-1 bg-slate-100 rounded-lg border border-slate-200">
+              <div className="inline-flex p-1 bg-white rounded-lg border border-slate-200 w-full shadow-2xs">
                 <button
                   type="button"
                   onClick={() => setViewMode('month')}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                  className={`flex-1 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
                     viewMode === 'month'
-                      ? 'bg-white text-[#0F766E] shadow-sm'
+                      ? 'bg-[#0F766E] text-white shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
@@ -907,9 +1190,9 @@ export default function Reports() {
                 <button
                   type="button"
                   onClick={() => setViewMode('period')}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                  className={`flex-1 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
                     viewMode === 'period'
-                      ? 'bg-[#0F766E] text-white shadow-sm'
+                      ? 'bg-[#0F766E] text-white shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
@@ -918,14 +1201,14 @@ export default function Reports() {
               </div>
             </div>
 
-            {/* 2. Selection based on mode */}
+            {/* 2. Mês de Competência (Select) OU DatePickers */}
             {viewMode === 'month' ? (
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
                   Mês de Competência
                 </Label>
                 <Select value={selectedRunId} onValueChange={handleRunChange}>
-                  <SelectTrigger className="w-56 h-10 border-slate-300">
+                  <SelectTrigger className="w-full h-10 border-slate-300 bg-white shadow-2xs">
                     <SelectValue placeholder="Selecione o mês" />
                   </SelectTrigger>
                   <SelectContent>
@@ -939,20 +1222,19 @@ export default function Reports() {
                 </Select>
               </div>
             ) : (
-              /* Period Mode: Date Range Pickers */
-              <div className="flex items-end gap-2">
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
-                    Data Inicial
-                  </Label>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                  Intervalo do Período
+                </Label>
+                <div className="flex items-center gap-1.5">
                   <Popover>
                     <PopoverTrigger asChild>
                       <Button
                         variant="outline"
-                        className="w-36 h-10 justify-start text-left font-normal border-slate-300 text-xs"
+                        className="flex-1 h-10 justify-start text-left font-normal border-slate-300 bg-white text-xs shadow-2xs px-2.5"
                       >
-                        <CalendarIcon className="mr-2 h-3.5 w-3.5 text-[#0F766E]" />
-                        {periodStartDate ? formatDateDisplay(periodStartDate) : 'Selecione'}
+                        <CalendarIcon className="mr-1.5 h-3.5 w-3.5 text-[#0F766E]" />
+                        {periodStartDate ? formatDateDisplay(periodStartDate) : 'Início'}
                       </Button>
                     </PopoverTrigger>
                     <PopoverContent className="w-auto p-0" align="start">
@@ -971,22 +1253,15 @@ export default function Reports() {
                       />
                     </PopoverContent>
                   </Popover>
-                </div>
-
-                <span className="text-slate-400 pb-2.5 text-xs font-bold">até</span>
-
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
-                    Data Final
-                  </Label>
+                  <span className="text-slate-400 text-xs font-bold">a</span>
                   <Popover>
                     <PopoverTrigger asChild>
                       <Button
                         variant="outline"
-                        className="w-36 h-10 justify-start text-left font-normal border-slate-300 text-xs"
+                        className="flex-1 h-10 justify-start text-left font-normal border-slate-300 bg-white text-xs shadow-2xs px-2.5"
                       >
-                        <CalendarIcon className="mr-2 h-3.5 w-3.5 text-[#0F766E]" />
-                        {periodEndDate ? formatDateDisplay(periodEndDate) : 'Selecione'}
+                        <CalendarIcon className="mr-1.5 h-3.5 w-3.5 text-[#0F766E]" />
+                        {periodEndDate ? formatDateDisplay(periodEndDate) : 'Fim'}
                       </Button>
                     </PopoverTrigger>
                     <PopoverContent className="w-auto p-0" align="start">
@@ -1009,45 +1284,106 @@ export default function Reports() {
               </div>
             )}
 
-            {/* 3. Seller Filter (Select "Vendedor") */}
-            {!isSales && (
-              <div className="space-y-1.5">
-                <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
-                  <Filter className="h-3 w-3 text-slate-500" />
-                  <span>Filtrar por Vendedor</span>
-                </Label>
-                <Select value={selectedSellerId} onValueChange={setSelectedSellerId}>
-                  <SelectTrigger className="w-56 h-10 border-slate-300">
-                    <SelectValue placeholder="Todos os vendedores" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos os vendedores</SelectItem>
-                    {sellerOptions.map((seller) => (
-                      <SelectItem key={seller.id} value={seller.id}>
-                        {seller.name} ({seller.role === 'manager' ? 'Gerente' : 'Vendedor'})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-
-          {/* Active Filter Indicator */}
-          {isSellerFiltered && !isSales && activeSellerUser && (
-            <div className="flex items-center gap-2 text-xs bg-teal-50 border border-teal-200 text-[#0F766E] px-3 py-1.5 rounded-lg">
-              <span className="font-semibold">Filtro ativo:</span>
-              <span className="underline font-bold">{activeSellerUser.name}</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setSelectedSellerId('all')}
-                className="h-6 px-1.5 text-xs text-teal-800 hover:text-teal-950 hover:bg-teal-100"
-              >
-                Limpar
-              </Button>
+            {/* 3. Usuários / Vendedores (Multi-select via Popover / Dropdown) */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center justify-between">
+                <span>Vendedores / Usuários</span>
+                {selectedUserIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedUserIds([])}
+                    className="text-[10px] text-teal-700 hover:underline capitalize"
+                  >
+                    Limpar ({selectedUserIds.length})
+                  </button>
+                )}
+              </Label>
+              {isSales ? (
+                <div className="h-10 px-3 bg-slate-100 rounded-md border border-slate-200 flex items-center text-xs text-slate-700 font-semibold">
+                  {appUser?.name} (Você)
+                </div>
+              ) : (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="w-full h-10 justify-between text-left font-normal border-slate-300 bg-white text-xs shadow-2xs px-3"
+                    >
+                      <span className="truncate">
+                        {selectedUserIds.length === 0
+                          ? 'Todos os colaboradores'
+                          : selectedUserIds.length === 1
+                            ? allUsers.find((u) => u.id === selectedUserIds[0])?.name ||
+                              '1 selecionado'
+                            : `${selectedUserIds.length} colaboradores selecionados`}
+                      </span>
+                      <ChevronDown className="h-3.5 w-3.5 opacity-60 ml-1 shrink-0" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-64 p-2" align="start">
+                    <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
+                      <label className="flex items-center gap-2 p-1.5 rounded-md hover:bg-slate-100 cursor-pointer text-xs font-semibold text-slate-800">
+                        <Checkbox
+                          checked={selectedUserIds.length === 0}
+                          onCheckedChange={() => setSelectedUserIds([])}
+                        />
+                        <span>Todos os colaboradores</span>
+                      </label>
+                      <div className="border-t border-slate-100 my-1" />
+                      {sellerOptions.map((seller) => {
+                        const isChecked = selectedUserIds.includes(seller.id)
+                        return (
+                          <label
+                            key={seller.id}
+                            className="flex items-center gap-2 p-1.5 rounded-md hover:bg-slate-100 cursor-pointer text-xs text-slate-700"
+                          >
+                            <Checkbox
+                              checked={isChecked}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setSelectedUserIds([...selectedUserIds, seller.id])
+                                } else {
+                                  setSelectedUserIds(
+                                    selectedUserIds.filter((id) => id !== seller.id),
+                                  )
+                                }
+                              }}
+                            />
+                            <div className="truncate">
+                              <span className="font-medium text-slate-900">{seller.name}</span>
+                              <span className="text-[10px] text-slate-500 ml-1 capitalize">
+                                ({seller.role})
+                              </span>
+                            </div>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              )}
             </div>
-          )}
+
+            {/* 4. Origem do Cliente (Select: Todos, Inbound, Outbound) */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                Origem do Cliente
+              </Label>
+              <Select
+                value={originFilter}
+                onValueChange={(val: OriginFilterType) => setOriginFilter(val)}
+              >
+                <SelectTrigger className="w-full h-10 border-slate-300 bg-white shadow-2xs">
+                  <SelectValue placeholder="Selecione a origem" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas as Origens</SelectItem>
+                  <SelectItem value="inbound">Inbound (Captação Interna)</SelectItem>
+                  <SelectItem value="outbound">Outbound (Prospecção Ativa)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1514,237 +1850,326 @@ export default function Reports() {
             </Card>
           )}
 
-          {/* Payroll Table: "Folha de Comissões" with expandable customer breakdown */}
-          <Card className="border-slate-200 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-3">
-              <div>
-                <CardTitle className="text-base font-bold text-slate-900">
-                  Folha de Comissões{' '}
-                  {isSellerFiltered ? `- ${activeSellerUser?.name}` : 'por Vendedor'}
-                </CardTitle>
-                <CardDescription className="text-xs text-slate-500">
-                  {viewMode === 'period'
-                    ? 'Salário fixo somado por cada mês apurado do período. Clique no vendedor para ver o demonstrativo detalhado por mês e cliente.'
-                    : 'Clique na linha do vendedor para visualizar o extrato detalhado de clientes e alíquotas aplicadas.'}
-                </CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm border-collapse">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50/50">
-                      <th className="py-3 px-4 w-10"></th>
-                      <th className="py-3 px-4">Vendedor / Colaborador</th>
-                      <th className="py-3 px-4">Cargo</th>
-                      <th className="py-3 px-4 text-right">
-                        {viewMode === 'period' ? 'Salário Fixo (Período)' : 'Salário Fixo'}
-                      </th>
-                      <th className="py-3 px-4 text-right">Comissões</th>
-                      <th className="py-3 px-4 text-right">Total a Pagar</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {usersWithCommissions.map((row) => {
-                      const isExpanded = !!expandedUsers[row.user.id]
-                      return (
-                        <>
-                          <tr
-                            key={row.user.id}
-                            onClick={() => toggleUserExpanded(row.user.id)}
-                            className="hover:bg-slate-50 cursor-pointer transition-colors"
-                          >
-                            <td className="py-3 px-4 text-slate-400">
-                              {isExpanded ? (
-                                <ChevronDown className="h-4 w-4 text-[#0F766E]" />
-                              ) : (
-                                <ChevronRight className="h-4 w-4" />
+          {/* =========================================================================
+              TABELA PRINCIPAL: VISÃO RESUMIDA vs VISÃO DETALHADA
+             ========================================================================= */}
+          {reportViewType === 'summary' ? (
+            /* VISÃO RESUMIDA: 1 linha por Vendedor com totais agrupados */
+            <Card className="border-slate-200 shadow-sm">
+              <CardHeader className="flex flex-row items-center justify-between pb-3">
+                <div>
+                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
+                    <TableProperties className="h-4 w-4 text-[#0F766E]" />
+                    <span>
+                      Folha de Comissões — Visão Resumida por Vendedor (
+                      {usersWithCommissions.length})
+                    </span>
+                  </CardTitle>
+                  <CardDescription className="text-xs text-slate-500">
+                    Totais consolidados de Bruto, Base Líquida, Comissão Gerada, Salário Fixo e
+                    Total a Pagar.
+                  </CardDescription>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50/50">
+                        <th className="py-3 px-4 w-10"></th>
+                        <th className="py-3 px-4">Vendedor / Colaborador</th>
+                        <th className="py-3 px-4">Cargo</th>
+                        <th className="py-3 px-4 text-right">Bruto Total</th>
+                        <th className="py-3 px-4 text-right">Base Líquida</th>
+                        <th className="py-3 px-4 text-right">Total Comissão</th>
+                        <th className="py-3 px-4 text-right">
+                          {viewMode === 'period' ? 'Fixo (Período)' : 'Fixo'}
+                        </th>
+                        <th className="py-3 px-4 text-right">Total a Pagar</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {usersWithCommissions.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="py-8 text-center text-slate-400 text-xs">
+                            Nenhum colaborador encontrado com os filtros selecionados.
+                          </td>
+                        </tr>
+                      ) : (
+                        usersWithCommissions.map((row) => {
+                          const isExpanded = !!expandedUsers[row.user.id]
+                          return (
+                            <>
+                              <tr
+                                key={row.user.id}
+                                onClick={() => toggleUserExpanded(row.user.id)}
+                                className="hover:bg-slate-50 cursor-pointer transition-colors"
+                              >
+                                <td className="py-3 px-4 text-slate-400">
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-4 w-4 text-[#0F766E]" />
+                                  ) : (
+                                    <ChevronRight className="h-4 w-4" />
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 font-bold text-slate-800">
+                                  {row.user.name}
+                                </td>
+                                <td className="py-3 px-4 capitalize">
+                                  <Badge variant="outline" className="text-xs">
+                                    {row.user.role}
+                                  </Badge>
+                                </td>
+                                <td className="py-3 px-4 text-right tabular-nums text-slate-700">
+                                  {formatBRL(row.grossTotal)}
+                                </td>
+                                <td className="py-3 px-4 text-right tabular-nums text-slate-800 font-medium">
+                                  {formatBRL(row.netTotal)}
+                                </td>
+                                <td className="py-3 px-4 text-right tabular-nums font-semibold text-teal-800">
+                                  {formatBRL(row.commissionsTotal)}
+                                </td>
+                                <td className="py-3 px-4 text-right tabular-nums text-slate-700">
+                                  {formatBRL(row.fixedSalary)}
+                                  {viewMode === 'period' && row.monthsCount > 1 && (
+                                    <span className="block text-[10px] text-slate-400">
+                                      ({row.monthsCount}x {formatBRL(row.user.fixed_salary)})
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 text-right tabular-nums font-bold text-slate-900">
+                                  {formatBRL(row.totalPayable)}
+                                </td>
+                              </tr>
+
+                              {/* Expanded sub-table showing customer details */}
+                              {isExpanded && (
+                                <tr key={`${row.user.id}-expanded`} className="bg-slate-50/70">
+                                  <td colSpan={8} className="p-4 pl-12">
+                                    <div className="rounded-lg border border-slate-200 bg-white overflow-hidden shadow-sm">
+                                      <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center justify-between">
+                                        <span>
+                                          Extrato analítico de comissões para {row.user.name} (
+                                          {row.commissionsList.length} clientes/faturamentos)
+                                        </span>
+                                      </div>
+                                      <table className="w-full text-xs text-left">
+                                        <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
+                                          <tr>
+                                            <th className="py-2 px-3">Cód.</th>
+                                            <th className="py-2 px-3">Cliente</th>
+                                            <th className="py-2 px-3 text-center">Origem</th>
+                                            <th className="py-2 px-3 text-right">
+                                              Faturamento Bruto
+                                            </th>
+                                            <th className="py-2 px-3 text-right">Base Líquida</th>
+                                            <th className="py-2 px-3 text-center">% Comissão</th>
+                                            <th className="py-2 px-3 text-right">
+                                              Comissão Gerada
+                                            </th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100">
+                                          {row.commissionsList.length === 0 ? (
+                                            <tr>
+                                              <td
+                                                colSpan={7}
+                                                className="py-3 text-center text-slate-400"
+                                              >
+                                                Nenhum faturamento registrado para este colaborador.
+                                              </td>
+                                            </tr>
+                                          ) : (
+                                            row.commissionsList.map((comm) => {
+                                              const bill = comm.billing
+                                              const cust = bill?.customer
+                                              return (
+                                                <tr key={comm.id} className="hover:bg-slate-50">
+                                                  <td className="py-2 px-3 font-semibold text-slate-700">
+                                                    {cust?.customer_code}
+                                                  </td>
+                                                  <td className="py-2 px-3 text-slate-800">
+                                                    {cust?.name}
+                                                  </td>
+                                                  <td className="py-2 px-3 text-center">
+                                                    <Badge
+                                                      variant="outline"
+                                                      className="text-[10px] uppercase"
+                                                    >
+                                                      {cust?.origin || 'outbound'}
+                                                    </Badge>
+                                                  </td>
+                                                  <td className="py-2 px-3 text-right tabular-nums text-slate-600">
+                                                    {formatBRL(Number(bill?.gross_amount))}
+                                                  </td>
+                                                  <td className="py-2 px-3 text-right tabular-nums text-slate-800 font-medium">
+                                                    {formatBRL(Number(bill?.net_amount))}
+                                                  </td>
+                                                  <td className="py-2 px-3 text-center font-bold text-teal-800">
+                                                    {comm.percentage_applied}%
+                                                  </td>
+                                                  <td className="py-2 px-3 text-right tabular-nums font-bold text-[#0F766E]">
+                                                    {formatBRL(Number(comm.commission_amount))}
+                                                  </td>
+                                                </tr>
+                                              )
+                                            })
+                                          )}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </td>
+                                </tr>
                               )}
+                            </>
+                          )
+                        })
+                      )}
+                    </tbody>
+                    <tfoot className="border-t-2 border-slate-300 bg-slate-100/70 font-bold text-sm">
+                      <tr>
+                        <td colSpan={3} className="py-3 px-4 text-right uppercase text-slate-800">
+                          {viewMode === 'period'
+                            ? 'Total Geral no Período:'
+                            : 'Total Geral no Mês:'}
+                        </td>
+                        <td className="py-3 px-4 text-right tabular-nums text-slate-800">
+                          {formatBRL(companyGross)}
+                        </td>
+                        <td className="py-3 px-4 text-right tabular-nums text-slate-800">
+                          {formatBRL(companyNet)}
+                        </td>
+                        <td className="py-3 px-4 text-right tabular-nums text-teal-800">
+                          {formatBRL(companyTotalCommissions)}
+                        </td>
+                        <td className="py-3 px-4 text-right tabular-nums text-slate-800">
+                          {formatBRL(companyTotalFixed)}
+                        </td>
+                        <td className="py-3 px-4 text-right tabular-nums text-base text-[#0F766E]">
+                          {formatBRL(companyGrandTotal)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            /* VISÃO DETALHADA: Linha a linha cada cliente de cada vendedor com impostos abatidos e comissão */
+            <Card className="border-slate-200 shadow-sm">
+              <CardHeader className="flex flex-row items-center justify-between pb-3">
+                <div>
+                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-[#0F766E]" />
+                    <span>
+                      Demonstrativo Analítico Linha a Linha por Cliente ({detailedViewRows.length})
+                    </span>
+                  </CardTitle>
+                  <CardDescription className="text-xs text-slate-500">
+                    Exibição individualizada de cada cliente, impostos abatidos daquele cliente,
+                    base de cálculo e comissão gerada.
+                  </CardDescription>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50/50">
+                        <th className="py-2.5 px-3">Vendedor</th>
+                        <th className="py-2.5 px-3">Competência</th>
+                        <th className="py-2.5 px-3">Código</th>
+                        <th className="py-2.5 px-3">Cliente</th>
+                        <th className="py-2.5 px-3 text-center">Origem</th>
+                        <th className="py-2.5 px-3 text-right">Faturamento Bruto</th>
+                        <th className="py-2.5 px-3 text-right">Impostos Abatidos</th>
+                        <th className="py-2.5 px-3">Detalhamento Tributário</th>
+                        <th className="py-2.5 px-3 text-right">Base Líquida</th>
+                        <th className="py-2.5 px-3 text-center">% Com.</th>
+                        <th className="py-2.5 px-3 text-right">Comissão Gerada</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {detailedViewRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={11} className="py-8 text-center text-slate-400">
+                            Nenhum faturamento encontrado com os filtros aplicados.
+                          </td>
+                        </tr>
+                      ) : (
+                        detailedViewRows.map((r, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
+                            <td className="py-2.5 px-3 font-semibold text-slate-800 whitespace-nowrap">
+                              {r.sellerName}
                             </td>
-                            <td className="py-3 px-4 font-bold text-slate-800">{row.user.name}</td>
-                            <td className="py-3 px-4 capitalize">
-                              <Badge variant="outline" className="text-xs">
-                                {row.user.role}
+                            <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
+                              {r.competenceMonth}
+                            </td>
+                            <td className="py-2.5 px-3 font-medium text-slate-700">
+                              {r.customerCode}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-900 font-medium">
+                              {r.customerName}
+                            </td>
+                            <td className="py-2.5 px-3 text-center">
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] uppercase font-semibold"
+                              >
+                                {r.origin}
                               </Badge>
                             </td>
-                            <td className="py-3 px-4 text-right tabular-nums text-slate-700">
-                              {formatBRL(row.fixedSalary)}
-                              {viewMode === 'period' && row.monthsCount > 1 && (
-                                <span className="block text-[10px] text-slate-400">
-                                  ({row.monthsCount}x {formatBRL(row.user.fixed_salary)})
-                                </span>
-                              )}
+                            <td className="py-2.5 px-3 text-right tabular-nums text-slate-600">
+                              {formatBRL(r.grossAmount)}
                             </td>
-                            <td className="py-3 px-4 text-right tabular-nums font-semibold text-teal-800">
-                              {formatBRL(row.commissionsTotal)}
+                            <td className="py-2.5 px-3 text-right tabular-nums text-rose-700 font-medium">
+                              {formatBRL(r.taxesDeducted)}
                             </td>
-                            <td className="py-3 px-4 text-right tabular-nums font-bold text-slate-900">
-                              {formatBRL(row.totalPayable)}
+                            <td
+                              className="py-2.5 px-3 text-[11px] text-slate-500 max-w-xs truncate"
+                              title={r.taxDetails}
+                            >
+                              {r.taxDetails}
+                            </td>
+                            <td className="py-2.5 px-3 text-right tabular-nums text-slate-800 font-semibold">
+                              {formatBRL(r.netAmount)}
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-bold text-teal-800">
+                              {r.commissionPct}%
+                            </td>
+                            <td className="py-2.5 px-3 text-right tabular-nums font-bold text-[#0F766E]">
+                              {formatBRL(r.commissionAmount)}
                             </td>
                           </tr>
-
-                          {/* Expanded sub-table showing customer details (grouped by month in period mode) */}
-                          {isExpanded && (
-                            <tr key={`${row.user.id}-expanded`} className="bg-slate-50/70">
-                              <td colSpan={6} className="p-4 pl-12">
-                                <div className="rounded-lg border border-slate-200 bg-white overflow-hidden shadow-sm">
-                                  <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center justify-between">
-                                    <span>
-                                      Extrato detalhado de comissões para {row.user.name} (
-                                      {row.commissionsList.length})
-                                    </span>
-                                    {viewMode === 'period' && (
-                                      <span className="text-slate-500 font-semibold">
-                                        Período: {formatDateDisplay(periodStartDate)} a{' '}
-                                        {formatDateDisplay(periodEndDate)}
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  {viewMode === 'month' ? (
-                                    /* Single Month Breakdown */
-                                    <table className="w-full text-xs text-left">
-                                      <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
-                                        <tr>
-                                          <th className="py-2 px-3">ID do Cliente</th>
-                                          <th className="py-2 px-3">Cliente</th>
-                                          <th className="py-2 px-3 text-right">
-                                            Faturamento Bruto
-                                          </th>
-                                          <th className="py-2 px-3 text-right">Base Líquida</th>
-                                          <th className="py-2 px-3 text-center">
-                                            Percentual Aplicado
-                                          </th>
-                                          <th className="py-2 px-3 text-right">Comissão</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody className="divide-y divide-slate-100">
-                                        {row.commissionsList.length === 0 ? (
-                                          <tr>
-                                            <td
-                                              colSpan={6}
-                                              className="py-3 text-center text-slate-400"
-                                            >
-                                              Nenhum cliente faturado para este colaborador no mês.
-                                            </td>
-                                          </tr>
-                                        ) : (
-                                          row.commissionsList.map((comm) => {
-                                            const bill = comm.billing
-                                            const cust = bill?.customer
-                                            return (
-                                              <tr key={comm.id} className="hover:bg-slate-50">
-                                                <td className="py-2 px-3 font-semibold text-slate-700">
-                                                  {cust?.customer_code}
-                                                </td>
-                                                <td className="py-2 px-3 text-slate-800">
-                                                  {cust?.name}
-                                                </td>
-                                                <td className="py-2 px-3 text-right tabular-nums text-slate-600">
-                                                  {formatBRL(Number(bill?.gross_amount))}
-                                                </td>
-                                                <td className="py-2 px-3 text-right tabular-nums text-slate-800 font-medium">
-                                                  {formatBRL(Number(bill?.net_amount))}
-                                                </td>
-                                                <td className="py-2 px-3 text-center font-bold text-teal-800">
-                                                  {comm.percentage_applied}%
-                                                </td>
-                                                <td className="py-2 px-3 text-right tabular-nums font-bold text-[#0F766E]">
-                                                  {formatBRL(Number(comm.commission_amount))}
-                                                </td>
-                                              </tr>
-                                            )
-                                          })
-                                        )}
-                                      </tbody>
-                                    </table>
-                                  ) : (
-                                    /* Period Mode: Grouped by month with monthly subtotals */
-                                    <div className="divide-y divide-slate-200">
-                                      {groupCommissionsByMonth(row.commissionsList).map((grp) => (
-                                        <div key={grp.monthYear} className="p-3">
-                                          <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-100">
-                                            <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                                              Competência: {formatMonth(grp.monthYear)}
-                                            </span>
-                                            <span className="text-xs font-semibold text-[#0F766E]">
-                                              Subtotal do Mês: {formatBRL(grp.subtotalComm)}
-                                            </span>
-                                          </div>
-                                          <table className="w-full text-xs text-left">
-                                            <thead className="bg-slate-50/70 text-slate-500 font-semibold">
-                                              <tr>
-                                                <th className="py-1.5 px-2">ID</th>
-                                                <th className="py-1.5 px-2">Cliente</th>
-                                                <th className="py-1.5 px-2 text-right">Bruto</th>
-                                                <th className="py-1.5 px-2 text-right">Líquido</th>
-                                                <th className="py-1.5 px-2 text-center">%</th>
-                                                <th className="py-1.5 px-2 text-right">Comissão</th>
-                                              </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-100">
-                                              {grp.items.map((comm) => {
-                                                const bill = comm.billing
-                                                const cust = bill?.customer
-                                                return (
-                                                  <tr key={comm.id} className="hover:bg-slate-50">
-                                                    <td className="py-1.5 px-2 font-medium text-slate-700">
-                                                      {cust?.customer_code}
-                                                    </td>
-                                                    <td className="py-1.5 px-2 text-slate-800">
-                                                      {cust?.name}
-                                                    </td>
-                                                    <td className="py-1.5 px-2 text-right tabular-nums text-slate-600">
-                                                      {formatBRL(Number(bill?.gross_amount))}
-                                                    </td>
-                                                    <td className="py-1.5 px-2 text-right tabular-nums text-slate-800">
-                                                      {formatBRL(Number(bill?.net_amount))}
-                                                    </td>
-                                                    <td className="py-1.5 px-2 text-center font-bold text-teal-800">
-                                                      {comm.percentage_applied}%
-                                                    </td>
-                                                    <td className="py-1.5 px-2 text-right tabular-nums font-bold text-[#0F766E]">
-                                                      {formatBRL(Number(comm.commission_amount))}
-                                                    </td>
-                                                  </tr>
-                                                )
-                                              })}
-                                            </tbody>
-                                          </table>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </>
-                      )
-                    })}
-                  </tbody>
-                  <tfoot className="border-t-2 border-slate-300 bg-slate-100/70 font-bold text-sm">
-                    <tr>
-                      <td colSpan={3} className="py-3 px-4 text-right uppercase text-slate-800">
-                        {viewMode === 'period'
-                          ? 'Total da Folha no Período:'
-                          : 'Total da Folha do Mês:'}
-                      </td>
-                      <td className="py-3 px-4 text-right tabular-nums text-slate-800">
-                        {formatBRL(companyTotalFixed)}
-                      </td>
-                      <td className="py-3 px-4 text-right tabular-nums text-teal-800">
-                        {formatBRL(companyTotalCommissions)}
-                      </td>
-                      <td className="py-3 px-4 text-right tabular-nums text-base text-[#0F766E]">
-                        {formatBRL(companyGrandTotal)}
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
+                        ))
+                      )}
+                    </tbody>
+                    <tfoot className="border-t-2 border-slate-300 bg-slate-100/80 font-bold text-xs">
+                      <tr>
+                        <td colSpan={5} className="py-3 px-3 text-right uppercase text-slate-800">
+                          Totalizações Analíticas:
+                        </td>
+                        <td className="py-3 px-3 text-right tabular-nums text-slate-800">
+                          {formatBRL(companyGross)}
+                        </td>
+                        <td className="py-3 px-3 text-right tabular-nums text-rose-700">
+                          {formatBRL(companyTaxes)}
+                        </td>
+                        <td></td>
+                        <td className="py-3 px-3 text-right tabular-nums text-slate-800">
+                          {formatBRL(companyNet)}
+                        </td>
+                        <td></td>
+                        <td className="py-3 px-3 text-right tabular-nums font-bold text-sm text-[#0F766E]">
+                          {formatBRL(companyTotalCommissions)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Charts: Donut Tax Composition & Bar Gross vs Net */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

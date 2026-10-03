@@ -8,6 +8,7 @@ import type {
   CommissionProfile,
   AppUser,
   Commission,
+  SystemSettings,
 } from '@/types/database'
 import { evaluateTaxFormula } from '@/lib/formulaEvaluator'
 
@@ -804,7 +805,12 @@ export async function getAllUsers(): Promise<AppUser[]> {
 
 export async function updateUser(
   id: string,
-  updates: Partial<Pick<AppUser, 'name' | 'role' | 'fixed_salary'>>,
+  updates: Partial<
+    Pick<
+      AppUser,
+      'name' | 'role' | 'fixed_salary' | 'auto_send_report_to_self' | 'cc_hr' | 'cc_finance'
+    >
+  >,
 ): Promise<AppUser> {
   const { data, error } = await db.from('users').update(updates).eq('id', id).select().single()
 
@@ -907,4 +913,88 @@ export async function toggleTaxDeductionActive(id: string, isActive: boolean): P
 export async function deleteTaxDeduction(id: string): Promise<void> {
   const { error } = await db.from('tax_deductions').delete().eq('id', id)
   if (error) throw error
+}
+
+export async function getSystemSettings(): Promise<SystemSettings | null> {
+  const { data, error } = await db.from('system_settings').select('*').limit(1).maybeSingle()
+  if (error) throw error
+  return data as unknown as SystemSettings | null
+}
+
+export async function updateSystemSettings(
+  settings: Partial<SystemSettings>,
+): Promise<SystemSettings> {
+  const current = await getSystemSettings()
+  if (current) {
+    const { data, error } = await db
+      .from('system_settings')
+      .update({
+        ...settings,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', current.id)
+      .select()
+      .single()
+    if (error) throw error
+    return data as unknown as SystemSettings
+  } else {
+    const { data, error } = await db
+      .from('system_settings')
+      .insert([
+        {
+          company_name: settings.company_name || 'Globex Multimodal',
+          company_logo_url: settings.company_logo_url || null,
+          hr_email: settings.hr_email || null,
+          finance_email: settings.finance_email || null,
+        },
+      ])
+      .select()
+      .single()
+    if (error) throw error
+    return data as unknown as SystemSettings
+  }
+}
+
+export async function uploadCompanyLogo(file: File): Promise<string> {
+  const fileExt = file.name.split('.').pop()
+  const fileName = `company-logo-${Date.now()}.${fileExt}`
+  const filePath = `logos/${fileName}`
+
+  const { error: uploadError } = await supabase.storage
+    .from('assets')
+    .upload(filePath, file, { upsert: true })
+
+  if (uploadError) throw uploadError
+
+  const { data } = supabase.storage.from('assets').getPublicUrl(filePath)
+  return data.publicUrl
+}
+
+export async function sendCommissionReports(params: {
+  monthlyRunId?: string
+  userIds?: string[]
+}): Promise<{
+  success: boolean
+  simulated?: boolean
+  message: string
+  dispatchedCount?: number
+  plan?: any[]
+  details?: any[]
+}> {
+  const { data, error } = await supabase.functions.invoke('send-reports', {
+    body: {
+      monthly_run_id: params.monthlyRunId,
+      user_ids: params.userIds,
+    },
+  })
+
+  if (error) {
+    throw new Error(error.message || 'Falha ao acionar a função de disparo de relatórios.')
+  }
+
+  if (data && data.success === false) {
+    throw new Error(data.error || 'Falha no processamento do disparo de e-mails.')
+  }
+
+  return data
 }

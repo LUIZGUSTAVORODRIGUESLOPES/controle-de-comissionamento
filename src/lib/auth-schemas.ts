@@ -81,6 +81,9 @@ export const createUserSchema = z.object({
       },
       { message: 'Informe um valor numérico válido para o salário' },
     ),
+  autoSendReportToSelf: z.boolean(),
+  ccHr: z.boolean(),
+  ccFinance: z.boolean(),
 })
 
 export type CreateUserFormData = z.infer<typeof createUserSchema>
@@ -105,6 +108,9 @@ export const editUserSchema = z.object({
       },
       { message: 'Informe um valor numérico válido para o salário' },
     ),
+  autoSendReportToSelf: z.boolean(),
+  ccHr: z.boolean(),
+  ccFinance: z.boolean(),
 })
 
 export type EditUserFormData = z.infer<typeof editUserSchema>

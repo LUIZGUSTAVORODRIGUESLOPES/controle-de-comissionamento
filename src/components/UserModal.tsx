@@ -12,7 +12,8 @@ import { PasswordStrengthChecklist } from '@/components/PasswordStrengthChecklis
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
-import { ShieldCheck } from 'lucide-react'
+import { ShieldCheck, Mail, BellRing } from 'lucide-react'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Select,
   SelectContent,
@@ -52,6 +53,9 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
       password: '',
       role: 'sales',
       fixedSalary: '3500',
+      autoSendReportToSelf: true,
+      ccHr: false,
+      ccFinance: false,
     },
     mode: 'onChange',
   })
@@ -64,6 +68,9 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
       email: '',
       role: 'sales',
       fixedSalary: '3500',
+      autoSendReportToSelf: true,
+      ccHr: false,
+      ccFinance: false,
     },
     mode: 'onChange',
   })
@@ -79,6 +86,9 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
           email: editingUser.email,
           role: editingUser.role,
           fixedSalary: String(editingUser.fixed_salary || 0),
+          autoSendReportToSelf: editingUser.auto_send_report_to_self ?? true,
+          ccHr: editingUser.cc_hr ?? false,
+          ccFinance: editingUser.cc_finance ?? false,
         })
       } else {
         createForm.reset({
@@ -87,6 +97,9 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
           password: '',
           role: 'sales',
           fixedSalary: '3500',
+          autoSendReportToSelf: true,
+          ccHr: false,
+          ccFinance: false,
         })
       }
     }
@@ -108,6 +121,9 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
             name: data.name.trim(),
             role: data.role,
             fixed_salary: salaryNum,
+            auto_send_report_to_self: data.autoSendReportToSelf,
+            cc_hr: data.ccHr,
+            cc_finance: data.ccFinance,
           },
         })
 
@@ -137,6 +153,9 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
               email: data.email.trim(),
               role: data.role,
               fixed_salary: salaryNum,
+              auto_send_report_to_self: data.autoSendReportToSelf,
+              cc_hr: data.ccHr,
+              cc_finance: data.ccFinance,
             },
           ])
           if (insErr) throw insErr
@@ -176,6 +195,9 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
         name: data.name.trim(),
         role: data.role,
         fixed_salary: salaryNum,
+        auto_send_report_to_self: data.autoSendReportToSelf,
+        cc_hr: data.ccHr,
+        cc_finance: data.ccFinance,
       })
 
       toast({
@@ -303,6 +325,58 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
                     {editForm.formState.errors.fixedSalary.message}
                   </p>
                 )}
+              </div>
+            </div>
+
+            {/* Preferências de Notificação Automática */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3.5 space-y-3">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-700">
+                <BellRing className="h-3.5 w-3.5 text-[#0F766E]" />
+                <span>Preferências de Notificação por E-mail</span>
+              </div>
+              <div className="space-y-2 text-xs">
+                <Controller
+                  name="autoSendReportToSelf"
+                  control={editForm.control}
+                  render={({ field }) => (
+                    <label className="flex items-center gap-2 cursor-pointer select-none text-slate-700">
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        disabled={isSubmitting}
+                      />
+                      <span>Enviar relatório para mim mesmo</span>
+                    </label>
+                  )}
+                />
+                <Controller
+                  name="ccHr"
+                  control={editForm.control}
+                  render={({ field }) => (
+                    <label className="flex items-center gap-2 cursor-pointer select-none text-slate-700">
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        disabled={isSubmitting}
+                      />
+                      <span>Enviar cópia para RH</span>
+                    </label>
+                  )}
+                />
+                <Controller
+                  name="ccFinance"
+                  control={editForm.control}
+                  render={({ field }) => (
+                    <label className="flex items-center gap-2 cursor-pointer select-none text-slate-700">
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        disabled={isSubmitting}
+                      />
+                      <span>Enviar cópia para Financeiro</span>
+                    </label>
+                  )}
+                />
               </div>
             </div>
 
@@ -451,6 +525,58 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
                     {createForm.formState.errors.fixedSalary.message}
                   </p>
                 )}
+              </div>
+            </div>
+
+            {/* Preferências de Notificação Automática */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3.5 space-y-3">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-700">
+                <BellRing className="h-3.5 w-3.5 text-[#0F766E]" />
+                <span>Preferências de Notificação por E-mail</span>
+              </div>
+              <div className="space-y-2 text-xs">
+                <Controller
+                  name="autoSendReportToSelf"
+                  control={createForm.control}
+                  render={({ field }) => (
+                    <label className="flex items-center gap-2 cursor-pointer select-none text-slate-700">
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        disabled={isSubmitting}
+                      />
+                      <span>Enviar relatório para mim mesmo</span>
+                    </label>
+                  )}
+                />
+                <Controller
+                  name="ccHr"
+                  control={createForm.control}
+                  render={({ field }) => (
+                    <label className="flex items-center gap-2 cursor-pointer select-none text-slate-700">
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        disabled={isSubmitting}
+                      />
+                      <span>Enviar cópia para RH</span>
+                    </label>
+                  )}
+                />
+                <Controller
+                  name="ccFinance"
+                  control={createForm.control}
+                  render={({ field }) => (
+                    <label className="flex items-center gap-2 cursor-pointer select-none text-slate-700">
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        disabled={isSubmitting}
+                      />
+                      <span>Enviar cópia para Financeiro</span>
+                    </label>
+                  )}
+                />
               </div>
             </div>
 

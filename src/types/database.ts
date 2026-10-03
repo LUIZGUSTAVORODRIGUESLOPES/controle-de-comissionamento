@@ -9,7 +9,19 @@ export interface AppUser {
   email: string
   role: UserRole
   fixed_salary: number
+  auto_send_report_to_self?: boolean
+  cc_hr?: boolean
+  cc_finance?: boolean
   created_at?: string
+}
+
+export interface SystemSettings {
+  id: string
+  company_name: string
+  company_logo_url: string | null
+  hr_email: string | null
+  finance_email: string | null
+  updated_at?: string
 }
 
 export interface CommissionProfile {

@@ -11,16 +11,21 @@ import {
   upsertTaxDeduction,
   toggleTaxDeductionActive,
   deleteTaxDeduction,
+  getSystemSettings,
+  updateSystemSettings,
+  uploadCompanyLogo,
 } from '@/services/commissionService'
 import type {
   AppUser,
   CommissionProfile,
   TaxDeduction,
+  SystemSettings as SystemSettingsType,
   UserRole,
   CustomerOrigin,
 } from '@/types/database'
 import { evaluateTaxFormula } from '@/lib/formulaEvaluator'
 import { useToast } from '@/hooks/use-toast'
+import { useAuth } from '@/hooks/use-auth'
 import { UserModal } from '@/components/UserModal'
 import {
   Users,
@@ -35,6 +40,10 @@ import {
   Info,
   DollarSign,
   Shield,
+  Building2,
+  UploadCloud,
+  Mail,
+  Loader2,
 } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
@@ -80,11 +89,22 @@ import {
 
 export default function Settings() {
   const { toast } = useToast()
+  const { appUser } = useAuth()
+  const isAdmin = appUser?.role === 'admin'
 
   const [users, setUsers] = useState<AppUser[]>([])
   const [profiles, setProfiles] = useState<CommissionProfile[]>([])
   const [taxes, setTaxes] = useState<TaxDeduction[]>([])
+  const [systemSettings, setSystemSettings] = useState<SystemSettingsType | null>(null)
   const [loading, setLoading] = useState(true)
+
+  // Company Settings State
+  const [companyName, setCompanyName] = useState('Globex Multimodal')
+  const [companyLogoUrl, setCompanyLogoUrl] = useState<string | null>(null)
+  const [hrEmail, setHrEmail] = useState('')
+  const [financeEmail, setFinanceEmail] = useState('')
+  const [savingSettings, setSavingSettings] = useState(false)
+  const [uploadingLogo, setUploadingLogo] = useState(false)
 
   // Users Modals & State
   const [userModalOpen, setUserModalOpen] = useState(false)
@@ -122,14 +142,22 @@ export default function Settings() {
   const loadData = async () => {
     setLoading(true)
     try {
-      const [usersData, profilesData, taxesData] = await Promise.all([
+      const [usersData, profilesData, taxesData, sysSettingsData] = await Promise.all([
         getAllUsers(),
         getAllCommissionProfiles(),
         getAllTaxDeductions(),
+        getSystemSettings(),
       ])
       setUsers(usersData)
       setProfiles(profilesData)
       setTaxes(taxesData)
+      if (sysSettingsData) {
+        setSystemSettings(sysSettingsData)
+        setCompanyName(sysSettingsData.company_name || 'Globex Multimodal')
+        setCompanyLogoUrl(sysSettingsData.company_logo_url || null)
+        setHrEmail(sysSettingsData.hr_email || '')
+        setFinanceEmail(sysSettingsData.finance_email || '')
+      }
     } catch (err) {
       console.error(err)
       toast({
@@ -151,6 +179,81 @@ export default function Settings() {
       style: 'currency',
       currency: 'BRL',
     }).format(val || 0)
+  }
+
+  // ==========================================
+  // COMPANY SETTINGS ACTIONS
+  // ==========================================
+
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    if (!isAdmin) {
+      toast({
+        title: 'Acesso Negado',
+        description: 'Apenas administradores podem atualizar a logo da empresa.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setUploadingLogo(true)
+    try {
+      const publicUrl = await uploadCompanyLogo(file)
+      setCompanyLogoUrl(publicUrl)
+      // Save instantly to system settings
+      await updateSystemSettings({ company_logo_url: publicUrl })
+      toast({
+        title: 'Logo Atualizada',
+        description: 'A imagem da logo foi enviada e vinculada à empresa.',
+      })
+    } catch (err: any) {
+      console.error(err)
+      toast({
+        title: 'Erro ao enviar logo',
+        description: err.message || 'Falha ao fazer upload da imagem.',
+        variant: 'destructive',
+      })
+    } finally {
+      setUploadingLogo(false)
+    }
+  }
+
+  const handleSaveCompanySettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!isAdmin) {
+      toast({
+        title: 'Acesso Restrito',
+        description: 'Apenas administradores têm permissão para salvar configurações da empresa.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setSavingSettings(true)
+    try {
+      const updated = await updateSystemSettings({
+        company_name: companyName.trim() || 'Globex Multimodal',
+        company_logo_url: companyLogoUrl,
+        hr_email: hrEmail.trim() || null,
+        finance_email: financeEmail.trim() || null,
+      })
+      setSystemSettings(updated)
+      toast({
+        title: 'Configurações Salvas',
+        description: 'Os dados globais da empresa e e-mails foram atualizados.',
+      })
+    } catch (err: any) {
+      console.error(err)
+      toast({
+        title: 'Erro ao salvar',
+        description: err.message || 'Não foi possível salvar as configurações.',
+        variant: 'destructive',
+      })
+    } finally {
+      setSavingSettings(false)
+    }
   }
 
   // ==========================================
@@ -430,6 +533,13 @@ export default function Settings() {
       <Tabs defaultValue="users" className="space-y-4">
         <TabsList className="bg-slate-200/80 p-1 rounded-xl">
           <TabsTrigger
+            value="company"
+            className="data-[state=active]:bg-white data-[state=active]:text-[#0F766E] font-semibold gap-2"
+          >
+            <Building2 className="h-4 w-4" />
+            <span>Configurações da Empresa</span>
+          </TabsTrigger>
+          <TabsTrigger
             value="users"
             className="data-[state=active]:bg-white data-[state=active]:text-[#0F766E] font-semibold gap-2"
           >
@@ -451,6 +561,201 @@ export default function Settings() {
             <span>Impostos & Fórmulas ({taxes.length})</span>
           </TabsTrigger>
         </TabsList>
+
+        {/* =========================================================================
+            TAB 0: CONFIGURAÇÕES DA EMPRESA
+           ========================================================================= */}
+        <TabsContent value="company" className="space-y-4">
+          <Card className="border-slate-200 shadow-sm">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
+                    <Building2 className="h-5 w-5 text-[#0F766E]" />
+                    <span>Identidade Corporativa & Notificações Globais</span>
+                  </CardTitle>
+                  <CardDescription className="text-xs text-slate-500">
+                    Defina o nome da empresa, logo oficial usada em relatórios PDF e os e-mails de
+                    cópia institucional (RH e Financeiro).
+                  </CardDescription>
+                </div>
+                {!isAdmin && (
+                  <Badge
+                    variant="outline"
+                    className="bg-amber-50 text-amber-800 border-amber-200 text-xs gap-1"
+                  >
+                    <Shield className="h-3.5 w-3.5" />
+                    <span>Modo Leitura (Apenas Admin pode editar)</span>
+                  </Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleSaveCompanySettings} className="space-y-6 max-w-2xl">
+                {/* Logo Upload Section */}
+                <div className="space-y-2">
+                  <Label className="text-xs font-semibold uppercase text-slate-700">
+                    Logo da Empresa
+                  </Label>
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 p-4 border border-slate-200 rounded-xl bg-slate-50/50">
+                    <div className="h-20 w-36 rounded-lg border border-slate-200 bg-white flex items-center justify-center overflow-hidden p-2 shadow-xs">
+                      {companyLogoUrl ? (
+                        <img
+                          src={companyLogoUrl}
+                          alt="Logo da Empresa"
+                          className="max-h-full max-w-full object-contain"
+                        />
+                      ) : (
+                        <div className="text-center text-slate-400">
+                          <Building2 className="h-7 w-7 mx-auto mb-1 opacity-60" />
+                          <span className="text-[10px]">Sem logo</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-1.5 flex-1">
+                      <div className="flex items-center gap-2">
+                        <Label
+                          htmlFor="company-logo-input"
+                          className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border shadow-xs cursor-pointer ${
+                            isAdmin
+                              ? 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'
+                              : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                          }`}
+                        >
+                          {uploadingLogo ? (
+                            <>
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              <span>Enviando...</span>
+                            </>
+                          ) : (
+                            <>
+                              <UploadCloud className="h-3.5 w-3.5 text-[#0F766E]" />
+                              <span>Carregar Nova Logo</span>
+                            </>
+                          )}
+                        </Label>
+                        <input
+                          id="company-logo-input"
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                          disabled={!isAdmin || uploadingLogo}
+                          onChange={handleLogoUpload}
+                          className="hidden"
+                        />
+                        {companyLogoUrl && isAdmin && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setCompanyLogoUrl(null)
+                              updateSystemSettings({ company_logo_url: null })
+                            }}
+                            className="text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 h-8"
+                          >
+                            Remover
+                          </Button>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        Formatos aceitos: PNG, JPG, WebP ou SVG (máx. 5MB). Aparecerá no cabeçalho
+                        das exportações em PDF.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Company Name */}
+                <div className="space-y-1.5">
+                  <Label
+                    htmlFor="company-name"
+                    className="text-xs font-semibold uppercase text-slate-700"
+                  >
+                    Razão Social / Nome da Empresa
+                  </Label>
+                  <Input
+                    id="company-name"
+                    value={companyName}
+                    onChange={(e) => setCompanyName(e.target.value)}
+                    disabled={!isAdmin || savingSettings}
+                    placeholder="Ex: Globex Multimodal"
+                    className="h-10"
+                  />
+                  <p className="text-[11px] text-slate-500">
+                    Nome impresso nos relatórios de comissionamento e extratos mensais.
+                  </p>
+                </div>
+
+                {/* E-mails de Cópia Global */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-200">
+                  <div className="space-y-1.5">
+                    <Label
+                      htmlFor="hr-email"
+                      className="text-xs font-semibold uppercase text-slate-700 flex items-center gap-1.5"
+                    >
+                      <Mail className="h-3.5 w-3.5 text-teal-600" />
+                      <span>E-mail do RH (Recursos Humanos)</span>
+                    </Label>
+                    <Input
+                      id="hr-email"
+                      type="email"
+                      value={hrEmail}
+                      onChange={(e) => setHrEmail(e.target.value)}
+                      disabled={!isAdmin || savingSettings}
+                      placeholder="rh@empresa.com.br"
+                      className="h-10"
+                    />
+                    <p className="text-[11px] text-slate-500">
+                      Recebe cópia do extrato para colaboradores configurados com CC RH.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label
+                      htmlFor="finance-email"
+                      className="text-xs font-semibold uppercase text-slate-700 flex items-center gap-1.5"
+                    >
+                      <Mail className="h-3.5 w-3.5 text-teal-600" />
+                      <span>E-mail do Financeiro</span>
+                    </Label>
+                    <Input
+                      id="finance-email"
+                      type="email"
+                      value={financeEmail}
+                      onChange={(e) => setFinanceEmail(e.target.value)}
+                      disabled={!isAdmin || savingSettings}
+                      placeholder="financeiro@empresa.com.br"
+                      className="h-10"
+                    />
+                    <p className="text-[11px] text-slate-500">
+                      Recebe cópia para validação de folha e liquidação de comissões.
+                    </p>
+                  </div>
+                </div>
+
+                {isAdmin && (
+                  <div className="pt-2">
+                    <Button
+                      type="submit"
+                      disabled={savingSettings || uploadingLogo}
+                      className="bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold h-10 px-5 shadow-sm"
+                    >
+                      {savingSettings ? (
+                        <div className="flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>Salvando...</span>
+                        </div>
+                      ) : (
+                        'Salvar Configurações da Empresa'
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </form>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         {/* =========================================================================
             TAB 1: UTILIZADORES
