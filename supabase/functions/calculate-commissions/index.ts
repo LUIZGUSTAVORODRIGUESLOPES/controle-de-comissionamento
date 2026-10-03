@@ -15,6 +15,19 @@ interface TaxAppliedSnapshot {
   deducted: number
 }
 
+// Format date string to YYYY-MM
+function toYearMonth(dateStr: string | null | undefined): string | null {
+  if (!dateStr) return null
+  const clean = dateStr.trim().split('T')[0]
+  const parts = clean.split('-')
+  if (parts.length >= 2) {
+    const yyyy = parts[0].padStart(4, '0')
+    const mm = parts[1].padStart(2, '0')
+    return `${yyyy}-${mm}`
+  }
+  return null
+}
+
 // Calculate month difference between start_date and run month_year
 function getMonthDifference(startDateStr: string | null | undefined, runMonthStr: string): number {
   if (!startDateStr) return 0
@@ -26,6 +39,34 @@ function getMonthDifference(startDateStr: string | null | undefined, runMonthStr
   const monthsDiff = run.getMonth() - start.getMonth()
   const totalMonths = yearsDiff * 12 + monthsDiff
   return Math.max(0, totalMonths)
+}
+
+// Check if run month falls within link validity period [valid_from, valid_until]
+function isLinkValidForMonth(
+  validFromStr: string | null | undefined,
+  validUntilStr: string | null | undefined,
+  runMonthStr: string,
+): boolean {
+  const runYM = toYearMonth(runMonthStr)
+  if (!runYM) return true
+
+  // If validFrom is specified, compare YYYY-MM
+  if (validFromStr) {
+    const fromYM = toYearMonth(validFromStr)
+    if (fromYM && runYM < fromYM) {
+      return false
+    }
+  }
+
+  // If validUntil is specified, compare YYYY-MM
+  if (validUntilStr) {
+    const untilYM = toYearMonth(validUntilStr)
+    if (untilYM && runYM > untilYM) {
+      return false
+    }
+  }
+
+  return true
 }
 
 Deno.serve(async (req: Request) => {
@@ -91,6 +132,7 @@ Deno.serve(async (req: Request) => {
     }
 
     const globalBilling = Number(run.gross_company_billing) || 0
+    const runYM = toYearMonth(run.month_year)
 
     // 2. Fetch all billings for this run with customer
     const { data: billings, error: billingsError } = await supabase
@@ -152,12 +194,6 @@ Deno.serve(async (req: Request) => {
           headers: { 'Content-Type': 'application/json', ...corsHeaders },
         },
       )
-    }
-
-    // Pre-clean previous commissions for these billings (if reprocessing)
-    const billingIds = (billings || []).map((b) => b.id)
-    if (billingIds.length > 0) {
-      await supabase.from('commissions').delete().in('billing_id', billingIds)
     }
 
     const commissionInserts: Array<{
@@ -235,10 +271,18 @@ Deno.serve(async (req: Request) => {
       }
 
       // Find linked users for this customer
-      const linkedUsers = (customerUsers || []).filter(
+      const rawLinkedUsers = (customerUsers || []).filter(
         (cu) => cu.customer_id === billing.customer_id,
       )
+
+      // Filter by validity period (valid_from and valid_until)
+      const linkedUsers = rawLinkedUsers.filter((cu) =>
+        isLinkValidForMonth(cu.valid_from, cu.valid_until, run.month_year),
+      )
+
       const monthsActive = getMonthDifference(customer?.start_date, run.month_year)
+      const customerStartYM = toYearMonth(customer?.start_date)
+      const isFirstBillingMonth = Boolean(runYM && customerStartYM && runYM === customerStartYM)
 
       for (const link of linkedUsers) {
         // Read commission_type directly from the link (customer_users), fallback to customer.origin or 'inbound'
@@ -249,24 +293,31 @@ Deno.serve(async (req: Request) => {
           (p) => p.user_id === link.user_id && p.type === linkRule,
         )
 
+        const fallbackProfile = (profiles || []).find((p) => p.user_id === link.user_id)
+        const activeProfile = userProfile || fallbackProfile
+
         let percentageToApply = 0
-        if (userProfile) {
+
+        // SETUP FEE CHECK: If this is the 1st billing month AND profile has setup_fee_percentage configured
+        const hasSetupFee =
+          activeProfile &&
+          activeProfile.setup_fee_percentage !== null &&
+          activeProfile.setup_fee_percentage !== undefined &&
+          !isNaN(Number(activeProfile.setup_fee_percentage))
+
+        if (isFirstBillingMonth && hasSetupFee) {
+          percentageToApply = Number(activeProfile.setup_fee_percentage) || 0
+        } else if (activeProfile) {
           if (linkRule === 'outbound') {
             // outbound: <= 12 months uses year 1, > 12 months uses year 2+
             if (monthsActive <= 12) {
-              percentageToApply = Number(userProfile.default_percentage_year_1) || 0
+              percentageToApply = Number(activeProfile.default_percentage_year_1) || 0
             } else {
-              percentageToApply = Number(userProfile.default_percentage_year_2_plus) || 0
+              percentageToApply = Number(activeProfile.default_percentage_year_2_plus) || 0
             }
           } else {
             // inbound, fixed or others use default_percentage_year_1
-            percentageToApply = Number(userProfile.default_percentage_year_1) || 0
-          }
-        } else {
-          // If no specific profile matching linkRule, try finding any profile for the user (fallback)
-          const fallbackProfile = (profiles || []).find((p) => p.user_id === link.user_id)
-          if (fallbackProfile) {
-            percentageToApply = Number(fallbackProfile.default_percentage_year_1) || 0
+            percentageToApply = Number(activeProfile.default_percentage_year_1) || 0
           }
         }
 
@@ -281,11 +332,24 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    // Safely replace commissions: clean previous and insert new
+    const billingIds = (billings || []).map((b) => b.id)
+    if (billingIds.length > 0) {
+      await supabase.from('commissions').delete().in('billing_id', billingIds)
+    }
+
     // Insert commissions batch
     if (commissionInserts.length > 0) {
       const { error: insCommError } = await supabase.from('commissions').insert(commissionInserts)
       if (insCommError) {
         console.error('Erro ao inserir comissões:', insCommError)
+        return new Response(
+          JSON.stringify({ error: `Erro ao inserir comissões: ${insCommError.message}` }),
+          {
+            status: 500,
+            headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          },
+        )
       }
     }
 

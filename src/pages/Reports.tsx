@@ -10,9 +10,11 @@ import {
   getAllUsers,
   markMonthlyRunAsPaid,
   unlockMonthlyRun,
+  processMonthlyRun,
 } from '@/services/commissionService'
 import type { MonthlyRun, Billing, Commission, AppUser } from '@/types/database'
 import { useToast } from '@/hooks/use-toast'
+import { toast as sonnerToast } from 'sonner'
 import {
   Download,
   Printer,
@@ -35,6 +37,7 @@ import {
   Layers,
   ArrowRight,
   Check,
+  RotateCw,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -117,6 +120,8 @@ export default function Reports() {
   // Compliance & Status actions state
   const [markingPaid, setMarkingPaid] = useState(false)
   const [confirmPaidOpen, setConfirmPaidOpen] = useState(false)
+  const [recalculating, setRecalculating] = useState(false)
+  const [confirmRecalculateOpen, setConfirmRecalculateOpen] = useState(false)
   const [unlockModalOpen, setUnlockModalOpen] = useState(false)
   const [adminPassword, setAdminPassword] = useState('')
   const [unlocking, setUnlocking] = useState(false)
@@ -578,6 +583,39 @@ export default function Reports() {
     return Object.values(groups).sort((a, b) => b.monthYear.localeCompare(a.monthYear))
   }
 
+  // Recalculate commissions for pending/processed month
+  const handleRecalculateCommissions = async () => {
+    if (!selectedRunId || !selectedRun) return
+
+    if (selectedRun.status === 'paid') {
+      sonnerToast.error('Mês fechado e pago não pode ser recalculado por compliance.')
+      return
+    }
+
+    setRecalculating(true)
+    const toastId = sonnerToast.loading('Recalculando comissões com as novas regras...')
+
+    try {
+      const res = await processMonthlyRun(selectedRunId)
+      sonnerToast.success('Comissões recalculadas com sucesso!', {
+        id: toastId,
+        description: `${res.billingsProcessed ?? billings.length} faturamentos e ${res.commissionsGenerated ?? 0} comissões geradas.`,
+      })
+
+      setConfirmRecalculateOpen(false)
+      // Reload current month data and runs list
+      await Promise.all([loadInitialData(selectedRunId), loadMonthData(selectedRunId)])
+    } catch (err: any) {
+      console.error('Erro no recálculo:', err)
+      sonnerToast.error('Erro ao recalcular comissões', {
+        id: toastId,
+        description: err.message || 'Falha ao processar comissões.',
+      })
+    } finally {
+      setRecalculating(false)
+    }
+  }
+
   // Compliance actions: Mark as Paid
   const handleMarkAsPaid = async () => {
     if (!selectedRunId) return
@@ -781,9 +819,23 @@ export default function Reports() {
 
           {/* Action buttons (Export / Print / Close Month / Unlock) */}
           <div className="flex flex-wrap items-center gap-2.5">
-            {/* Compliance actions visible ONLY in Month mode */}
+            {/* Compliance & Recalculation actions visible ONLY in Month mode */}
             {viewMode === 'month' && !isSales && (
               <>
+                {/* Recalculate button: visible for pending and processed months (hidden if paid) */}
+                {(selectedRun?.status === 'pending' || selectedRun?.status === 'processed') && (
+                  <Button
+                    onClick={() => setConfirmRecalculateOpen(true)}
+                    disabled={recalculating}
+                    variant="outline"
+                    className="border-teal-600 text-[#0F766E] hover:bg-teal-50 font-semibold flex items-center gap-2 h-10 px-4 shadow-xs"
+                    title="Recalcula comissões lendo as regras e vínculos atuais do banco"
+                  >
+                    <RotateCw className={`h-4 w-4 ${recalculating ? 'animate-spin' : ''}`} />
+                    <span>{recalculating ? 'Recalculando...' : 'Recalcular Comissões'}</span>
+                  </Button>
+                )}
+
                 {selectedRun?.status === 'processed' && (
                   <Button
                     onClick={() => setConfirmPaidOpen(true)}
@@ -1790,6 +1842,43 @@ export default function Reports() {
           </div>
         </div>
       )}
+
+      {/* MODAL: Confirmação de Recalcular Comissões */}
+      <AlertDialog open={confirmRecalculateOpen} onOpenChange={setConfirmRecalculateOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-slate-900">
+              <RotateCw className="h-5 w-5 text-[#0F766E]" />
+              <span>Recalcular Comissões de {formatMonth(selectedRun?.month_year)}?</span>
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2 text-xs text-slate-600">
+              <p>
+                Esta ação buscará os faturamentos deste mês e aplicará as regras atualizadas de
+                comissão:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-slate-700 pl-1">
+                <li>Vínculos de vendedores vigentes na data deste mês.</li>
+                <li>Prêmio de Implantação (se for o 1º mês de faturamento do cliente).</li>
+                <li>Taxas e perfis de comissão vigentes no banco de dados.</li>
+              </ul>
+              <div className="p-3 bg-teal-50 rounded-lg border border-teal-200 text-teal-900 text-xs">
+                Não é necessário refazer o upload da planilha nem excluir o faturamento. O recálculo
+                é seguro e atualizará os valores diretamente.
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={recalculating}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleRecalculateCommissions}
+              disabled={recalculating}
+              className="bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold"
+            >
+              {recalculating ? 'Recalculando...' : 'Confirmar Recálculo'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* MODAL: Confirmação de Fechar Mês e Marcar como Pago */}
       <AlertDialog open={confirmPaidOpen} onOpenChange={setConfirmPaidOpen}>

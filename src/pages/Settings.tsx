@@ -104,6 +104,7 @@ export default function Settings() {
   const [profileType, setProfileType] = useState<CustomerOrigin>('inbound')
   const [profileYear1, setProfileYear1] = useState('3.0')
   const [profileYear2, setProfileYear2] = useState('3.0')
+  const [profileSetupFee, setProfileSetupFee] = useState('')
   const [deleteProfileDialogOpen, setDeleteProfileDialogOpen] = useState(false)
   const [profileToDelete, setProfileToDelete] = useState<CommissionProfile | null>(null)
   const [savingProfile, setSavingProfile] = useState(false)
@@ -278,12 +279,18 @@ export default function Settings() {
       setProfileType(p.type)
       setProfileYear1(String(p.default_percentage_year_1))
       setProfileYear2(String(p.default_percentage_year_2_plus))
+      setProfileSetupFee(
+        p.setup_fee_percentage !== null && p.setup_fee_percentage !== undefined
+          ? String(p.setup_fee_percentage)
+          : '',
+      )
     } else {
       setEditingProfile(null)
       setProfileUserId(users[0]?.id || '')
       setProfileType('inbound')
       setProfileYear1('3.0')
       setProfileYear2('3.0')
+      setProfileSetupFee('')
     }
     setProfileModalOpen(true)
   }
@@ -303,6 +310,9 @@ export default function Settings() {
     try {
       const y1 = parseFloat(profileYear1.replace(',', '.')) || 0
       const y2 = parseFloat(profileYear2.replace(',', '.')) || 0
+      const setupFeeNum = profileSetupFee.trim()
+        ? parseFloat(profileSetupFee.replace(',', '.'))
+        : null
 
       await upsertCommissionProfile({
         id: editingProfile?.id,
@@ -310,6 +320,7 @@ export default function Settings() {
         type: profileType,
         default_percentage_year_1: y1,
         default_percentage_year_2_plus: profileType === 'inbound' ? y1 : y2, // Inbound doesn't degrade
+        setup_fee_percentage: setupFeeNum !== null && !isNaN(setupFeeNum) ? setupFeeNum : null,
       })
 
       toast({
@@ -651,6 +662,7 @@ export default function Settings() {
                       <th className="py-3 px-4">Origem do Cliente</th>
                       <th className="py-3 px-4 text-center">Alíquota 1º Ano (&le; 12 meses)</th>
                       <th className="py-3 px-4 text-center">Alíquota 2º Ano+ (&gt; 12 meses)</th>
+                      <th className="py-3 px-4 text-center">Prêmio Implantação (1º Mês)</th>
                       <th className="py-3 px-4 text-right">Ações</th>
                     </tr>
                   </thead>
@@ -678,6 +690,19 @@ export default function Settings() {
                           </td>
                           <td className="py-3 px-4 text-center font-bold text-slate-700 tabular-nums">
                             {p.default_percentage_year_2_plus}%
+                          </td>
+                          <td className="py-3 px-4 text-center font-bold text-amber-700 tabular-nums">
+                            {p.setup_fee_percentage !== null &&
+                            p.setup_fee_percentage !== undefined ? (
+                              <Badge
+                                variant="outline"
+                                className="bg-amber-50 text-amber-800 border-amber-300 font-semibold"
+                              >
+                                {p.setup_fee_percentage}%
+                              </Badge>
+                            ) : (
+                              <span className="text-slate-400 font-normal text-xs">-</span>
+                            )}
                           </td>
                           <td className="py-3 px-4 text-right space-x-2">
                             <Button
@@ -1044,6 +1069,37 @@ export default function Settings() {
                     className="h-10 tabular-nums"
                   />
                 </div>
+              </div>
+
+              {/* Campo opcional: Setup fee (Prêmio de Implantação) */}
+              <div className="space-y-1.5 p-3 rounded-lg border border-amber-200 bg-amber-50/50">
+                <div className="flex items-center justify-between">
+                  <Label
+                    htmlFor="p-setup"
+                    className="text-xs font-bold text-amber-950 uppercase flex items-center gap-1.5"
+                  >
+                    <span>Comissão de Implantação (Setup Fee %)</span>
+                  </Label>
+                  <span className="text-[10px] text-amber-800 font-medium">Opcional</span>
+                </div>
+                <div className="relative">
+                  <Input
+                    id="p-setup"
+                    type="text"
+                    value={profileSetupFee}
+                    onChange={(e) => setProfileSetupFee(e.target.value)}
+                    placeholder="Ex: 10.0 (opcional)"
+                    className="h-10 pr-8 bg-white border-amber-300 tabular-nums focus-visible:ring-amber-500"
+                  />
+                  <span className="absolute right-3 top-2.5 text-sm font-bold text-amber-700">
+                    %
+                  </span>
+                </div>
+                <p className="text-[11px] text-amber-900 leading-relaxed">
+                  Taxa diferenciada aplicada <strong>apenas no 1º faturamento do cliente</strong>{' '}
+                  (quando o mês de faturamento coincide com o mês da data de início do cliente). Se
+                  deixar em branco, aplicará a taxa padrão de 1º ano.
+                </p>
               </div>
 
               {profileType === 'inbound' ? (

@@ -117,6 +117,12 @@ export default function Customers() {
   const [eligibleUsers, setEligibleUsers] = useState<AppUser[]>([])
   const [selectedUserIdToAdd, setSelectedUserIdToAdd] = useState<string>('')
   const [selectedRuleToAdd, setSelectedRuleToAdd] = useState<string>('inbound')
+  const [selectedValidFromToAdd, setSelectedValidFromToAdd] = useState<string>(
+    new Date().toISOString().split('T')[0],
+  )
+  const [selectedValidUntilToAdd, setSelectedValidUntilToAdd] = useState<string>('')
+  const [bulkValidFrom, setBulkValidFrom] = useState<string>(new Date().toISOString().split('T')[0])
+  const [bulkValidUntil, setBulkValidUntil] = useState<string>('')
   const [addingUser, setAddingUser] = useState(false)
   const [removingUserId, setRemovingUserId] = useState<string | null>(null)
 
@@ -206,6 +212,8 @@ export default function Customers() {
     setBulkSelectedUserIds([])
     setBulkUserRules({})
     setBulkReplaceUsers(false)
+    setBulkValidFrom(new Date().toISOString().split('T')[0])
+    setBulkValidUntil('')
     setBulkNoCommission('keep')
     setBulkModalOpen(true)
   }
@@ -291,10 +299,19 @@ export default function Customers() {
       const payload: {
         customerIds: string[]
         noCommissionFlag?: boolean
-        usersWithRules?: Array<{ user_id: string; commission_type: string }>
+        usersWithRules?: Array<{
+          user_id: string
+          commission_type: string
+          valid_from?: string
+          valid_until?: string | null
+        }>
+        validFrom?: string
+        validUntil?: string | null
         replaceUsers?: boolean
       } = {
         customerIds: selectedCustomerIds,
+        validFrom: bulkValidFrom || new Date().toISOString().split('T')[0],
+        validUntil: bulkValidUntil || null,
       }
 
       if (bulkNoCommission === 'yes') {
@@ -340,6 +357,8 @@ export default function Customers() {
     setFormNoCommission(cust.no_commission_flag || false)
     setSelectedUserIdToAdd('')
     setSelectedRuleToAdd('inbound')
+    setSelectedValidFromToAdd(new Date().toISOString().split('T')[0])
+    setSelectedValidUntilToAdd('')
     setSheetOpen(true)
 
     // Refresh full details including customer_users
@@ -441,12 +460,10 @@ export default function Customers() {
   const handleAddUser = async () => {
     if (!selectedCustomer || !selectedUserIdToAdd) return
 
-    // Avoid duplicate check
-    const existingIds = (selectedCustomer.customer_users || []).map((cu) => cu.user_id)
-    if (existingIds.includes(selectedUserIdToAdd)) {
+    if (!selectedValidFromToAdd) {
       toast({
-        title: 'Usuário já vinculado',
-        description: 'Este vendedor ou gerente já está associado a este cliente.',
+        title: 'Data de início obrigatória',
+        description: 'Informe o campo "Vigente a partir de:" para registrar a vigência do vínculo.',
         variant: 'destructive',
       })
       return
@@ -454,10 +471,16 @@ export default function Customers() {
 
     setAddingUser(true)
     try {
-      await addUserToCustomer(selectedCustomer.id, selectedUserIdToAdd, selectedRuleToAdd)
+      await addUserToCustomer(
+        selectedCustomer.id,
+        selectedUserIdToAdd,
+        selectedRuleToAdd,
+        selectedValidFromToAdd,
+        selectedValidUntilToAdd || null,
+      )
       toast({
         title: 'Vendedor vinculado!',
-        description: `Usuário associado com sucesso ao cliente com regra "${selectedRuleToAdd.toUpperCase()}".`,
+        description: `Usuário associado com sucesso ao cliente com regra "${selectedRuleToAdd.toUpperCase()}" e vigência a partir de ${formatDateDisplay(selectedValidFromToAdd)}.`,
       })
       setSelectedUserIdToAdd('')
 
@@ -1054,6 +1077,18 @@ export default function Customers() {
                           >
                             {u?.role === 'manager' ? 'Gerente' : 'Vendedor'}
                           </Badge>
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] font-mono text-slate-600 bg-slate-50"
+                            title="Vigência do vínculo"
+                          >
+                            {link.valid_from
+                              ? formatDateDisplay(link.valid_from)
+                              : 'Desde o início'}
+                            {link.valid_until
+                              ? ` até ${formatDateDisplay(link.valid_until)}`
+                              : ' em diante'}
+                          </Badge>
                           <Button
                             variant="ghost"
                             size="icon"
@@ -1077,67 +1112,167 @@ export default function Customers() {
             </div>
 
             {/* Form to Add New User Link */}
-            <div className="pt-3 border-t border-slate-100 space-y-2">
+            <div className="pt-3 border-t border-slate-100 space-y-3">
               <Label className="text-xs font-semibold text-slate-700">
-                Vincular Novo Vendedor ou Gerente com Regra
+                Vincular Novo Vendedor ou Gerente com Regra e Vigência
               </Label>
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                <Select
-                  value={selectedUserIdToAdd}
-                  onValueChange={setSelectedUserIdToAdd}
-                  disabled={addingUser || unlinkedEligibleUsers.length === 0}
-                >
-                  <SelectTrigger className="flex-1 h-10 border-slate-300 text-xs">
-                    <SelectValue
-                      placeholder={
-                        unlinkedEligibleUsers.length === 0
-                          ? 'Todos os usuários disponíveis já estão vinculados'
-                          : 'Selecione o usuário...'
-                      }
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {unlinkedEligibleUsers.map((user) => (
-                      <SelectItem key={user.id} value={user.id} className="text-xs">
-                        {user.name} ({user.role === 'manager' ? 'Gerente' : 'Vendedor'}) &bull;{' '}
-                        {user.email}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-[11px] text-slate-500">Usuário</Label>
+                  <Select
+                    value={selectedUserIdToAdd}
+                    onValueChange={setSelectedUserIdToAdd}
+                    disabled={addingUser || unlinkedEligibleUsers.length === 0}
+                  >
+                    <SelectTrigger className="w-full h-10 border-slate-300 text-xs mt-1">
+                      <SelectValue
+                        placeholder={
+                          unlinkedEligibleUsers.length === 0
+                            ? 'Todos já vinculados'
+                            : 'Selecione o usuário...'
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {unlinkedEligibleUsers.map((user) => (
+                        <SelectItem key={user.id} value={user.id} className="text-xs">
+                          {user.name} ({user.role === 'manager' ? 'Gerente' : 'Vendedor'})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
+                  <Label className="text-[11px] text-slate-500">Regra de Comissão</Label>
+                  <Select
+                    value={selectedRuleToAdd}
+                    onValueChange={setSelectedRuleToAdd}
+                    disabled={addingUser || !selectedUserIdToAdd}
+                  >
+                    <SelectTrigger className="w-full h-10 border-slate-300 text-xs mt-1">
+                      <SelectValue placeholder="Regra..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="inbound" className="text-xs">
+                        Inbound
                       </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                      <SelectItem value="outbound" className="text-xs">
+                        Outbound
+                      </SelectItem>
+                      <SelectItem value="fixed" className="text-xs">
+                        Fixo
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
 
-                <Select
-                  value={selectedRuleToAdd}
-                  onValueChange={setSelectedRuleToAdd}
-                  disabled={addingUser || !selectedUserIdToAdd}
-                >
-                  <SelectTrigger className="w-full sm:w-36 h-10 border-slate-300 text-xs">
-                    <SelectValue placeholder="Regra..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="inbound" className="text-xs">
-                      Inbound
-                    </SelectItem>
-                    <SelectItem value="outbound" className="text-xs">
-                      Outbound
-                    </SelectItem>
-                    <SelectItem value="fixed" className="text-xs">
-                      Fixo
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
+              {/* DatePicker Obrigatório de Vigência: Vigente a partir de: */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                <div className="space-y-1">
+                  <Label className="text-xs font-medium text-slate-700 flex items-center gap-1">
+                    <span>Vigente a partir de:</span>
+                    <span className="text-rose-500">*</span>
+                  </Label>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="date"
+                      value={selectedValidFromToAdd}
+                      onChange={(e) => setSelectedValidFromToAdd(e.target.value)}
+                      required
+                      className="h-10 text-xs border-slate-300 focus-visible:ring-[#0F766E]"
+                    />
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="h-10 w-10 border-slate-300 shrink-0 text-slate-600 hover:text-[#0F766E]"
+                          title="Selecionar data no calendário"
+                        >
+                          <CalendarIcon className="h-4 w-4" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={
+                            selectedValidFromToAdd ? parseISO(selectedValidFromToAdd) : undefined
+                          }
+                          onSelect={(d) => {
+                            if (d) {
+                              const y = d.getFullYear()
+                              const m = String(d.getMonth() + 1).padStart(2, '0')
+                              const day = String(d.getDate()).padStart(2, '0')
+                              setSelectedValidFromToAdd(`${y}-${m}-${day}`)
+                            }
+                          }}
+                          initialFocus
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </div>
 
+                <div className="space-y-1">
+                  <Label className="text-xs font-medium text-slate-700 flex items-center justify-between">
+                    <span>Vigente até:</span>
+                    <span className="text-[10px] text-slate-400 font-normal">Opcional</span>
+                  </Label>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="date"
+                      value={selectedValidUntilToAdd}
+                      onChange={(e) => setSelectedValidUntilToAdd(e.target.value)}
+                      placeholder="Indeterminado"
+                      className="h-10 text-xs border-slate-300 focus-visible:ring-[#0F766E]"
+                    />
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="h-10 w-10 border-slate-300 shrink-0 text-slate-600 hover:text-[#0F766E]"
+                          title="Selecionar data final no calendário"
+                        >
+                          <CalendarIcon className="h-4 w-4" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={
+                            selectedValidUntilToAdd ? parseISO(selectedValidUntilToAdd) : undefined
+                          }
+                          onSelect={(d) => {
+                            if (d) {
+                              const y = d.getFullYear()
+                              const m = String(d.getMonth() + 1).padStart(2, '0')
+                              const day = String(d.getDate()).padStart(2, '0')
+                              setSelectedValidUntilToAdd(`${y}-${m}-${day}`)
+                            }
+                          }}
+                          initialFocus
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2">
                 <Button
                   onClick={handleAddUser}
-                  disabled={!selectedUserIdToAdd || addingUser}
-                  className="bg-[#0F766E] hover:bg-[#115E59] text-white text-xs font-semibold h-10 px-4 gap-1.5 shrink-0"
+                  disabled={!selectedUserIdToAdd || !selectedValidFromToAdd || addingUser}
+                  className="bg-[#0F766E] hover:bg-[#115E59] text-white text-xs font-semibold h-10 px-5 gap-1.5"
                 >
                   {addingUser ? (
                     <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <UserPlus className="h-3.5 w-3.5" />
                   )}
-                  <span>Vincular</span>
+                  <span>Vincular Vendedor</span>
                 </Button>
               </div>
             </div>
@@ -1281,6 +1416,106 @@ export default function Customers() {
                     )
                   })
                 )}
+              </div>
+
+              {/* Vigência em Lote (DatePicker Obrigatório: Vigente a partir de) */}
+              <div className="p-3.5 rounded-lg border border-teal-200 bg-teal-50/60 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-bold text-teal-950 flex items-center gap-1.5">
+                    <CalendarIcon className="h-3.5 w-3.5 text-[#0F766E]" />
+                    <span>Período de Vigência da Atribuição</span>
+                  </Label>
+                  <span className="text-[10px] text-teal-700 font-medium">
+                    Aplica a todos selecionados
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label className="text-[11px] font-semibold text-slate-700 flex items-center gap-1">
+                      <span>Vigente a partir de:</span>
+                      <span className="text-rose-500">*</span>
+                    </Label>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="date"
+                        value={bulkValidFrom}
+                        onChange={(e) => setBulkValidFrom(e.target.value)}
+                        required
+                        className="h-9 text-xs bg-white border-teal-300 focus-visible:ring-[#0F766E]"
+                      />
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-9 w-9 bg-white border-teal-300 shrink-0 text-slate-600 hover:text-[#0F766E]"
+                            title="Selecionar data no calendário"
+                          >
+                            <CalendarIcon className="h-3.5 w-3.5" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={bulkValidFrom ? parseISO(bulkValidFrom) : undefined}
+                            onSelect={(d) => {
+                              if (d) {
+                                const y = d.getFullYear()
+                                const m = String(d.getMonth() + 1).padStart(2, '0')
+                                const day = String(d.getDate()).padStart(2, '0')
+                                setBulkValidFrom(`${y}-${m}-${day}`)
+                              }
+                            }}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-[11px] font-semibold text-slate-700 flex items-center justify-between">
+                      <span>Vigente até:</span>
+                      <span className="text-[10px] text-slate-400 font-normal">Opcional</span>
+                    </Label>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="date"
+                        value={bulkValidUntil}
+                        onChange={(e) => setBulkValidUntil(e.target.value)}
+                        placeholder="Indeterminado"
+                        className="h-9 text-xs bg-white border-teal-300 focus-visible:ring-[#0F766E]"
+                      />
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-9 w-9 bg-white border-teal-300 shrink-0 text-slate-600 hover:text-[#0F766E]"
+                            title="Selecionar data final no calendário"
+                          >
+                            <CalendarIcon className="h-3.5 w-3.5" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={bulkValidUntil ? parseISO(bulkValidUntil) : undefined}
+                            onSelect={(d) => {
+                              if (d) {
+                                const y = d.getFullYear()
+                                const m = String(d.getMonth() + 1).padStart(2, '0')
+                                const day = String(d.getDate()).padStart(2, '0')
+                                setBulkValidUntil(`${y}-${m}-${day}`)
+                              }
+                            }}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* Modo de Substituição */}

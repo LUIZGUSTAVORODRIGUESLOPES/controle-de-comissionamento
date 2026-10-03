@@ -18,6 +18,7 @@ export interface CommissionProfile {
   type: CustomerOrigin
   default_percentage_year_1: number
   default_percentage_year_2_plus: number
+  setup_fee_percentage?: number | null
   created_at?: string
   user?: AppUser
 }
@@ -38,6 +39,8 @@ export interface CustomerUserLink {
   customer_id: string
   user_id: string
   commission_type?: 'inbound' | 'outbound' | 'fixed' | string
+  valid_from?: string
+  valid_until?: string | null
   created_at?: string
   user?: AppUser
 }

@@ -158,21 +158,32 @@ export async function addUserToCustomer(
   customerId: string,
   userId: string,
   commissionType: string = 'inbound',
+  validFrom?: string,
+  validUntil?: string | null,
 ): Promise<void> {
   // Check if link already exists
   const { data: existing } = await db
     .from('customer_users')
-    .select('id, commission_type')
+    .select('id, commission_type, valid_from, valid_until')
     .eq('customer_id', customerId)
     .eq('user_id', userId)
     .maybeSingle()
 
+  const defaultValidFrom = validFrom || new Date().toISOString().split('T')[0]
+
   if (existing) {
+    const updates: Record<string, any> = {}
     if (existing.commission_type !== commissionType) {
-      await db
-        .from('customer_users')
-        .update({ commission_type: commissionType })
-        .eq('id', existing.id)
+      updates.commission_type = commissionType
+    }
+    if (validFrom && existing.valid_from !== validFrom) {
+      updates.valid_from = validFrom
+    }
+    if (validUntil !== undefined && existing.valid_until !== validUntil) {
+      updates.valid_until = validUntil
+    }
+    if (Object.keys(updates).length > 0) {
+      await db.from('customer_users').update(updates).eq('id', existing.id)
     }
     return // Already linked
   }
@@ -182,6 +193,8 @@ export async function addUserToCustomer(
       customer_id: customerId,
       user_id: userId,
       commission_type: commissionType,
+      valid_from: defaultValidFrom,
+      valid_until: validUntil || null,
     },
   ])
 
@@ -265,6 +278,8 @@ export async function updateCustomerDetails(
 export interface UserWithRulePayload {
   user_id: string
   commission_type: string
+  valid_from?: string
+  valid_until?: string | null
 }
 
 export interface BulkUpdateCustomersParams {
@@ -272,6 +287,8 @@ export interface BulkUpdateCustomersParams {
   origin?: 'inbound' | 'outbound' | null
   noCommissionFlag?: boolean
   usersWithRules?: UserWithRulePayload[]
+  validFrom?: string
+  validUntil?: string | null
   userIds?: string[]
   replaceUsers?: boolean // true: delete existing links and insert users; false: append new users (avoid duplicates)
 }
@@ -326,6 +343,9 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
   }
 
   // 2. Tratar vínculos de vendedores/gerentes em customer_users (se targetUserRules foi especificado)
+  const defaultBatchValidFrom = params.validFrom || new Date().toISOString().split('T')[0]
+  const defaultBatchValidUntil = params.validUntil ?? null
+
   if (targetUserRules !== undefined) {
     if (replaceUsers) {
       // Modo substituição: deletar vínculos antigos dos clientes selecionados
@@ -336,12 +356,14 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
 
       if (delError) throw delError
 
-      // Inserir apenas os novos selecionados com a regra de cada usuário
+      // Inserir apenas os novos selecionados com a regra de cada usuário e vigência
       if (targetUserRules.length > 0) {
         const rowsToInsert: Array<{
           customer_id: string
           user_id: string
           commission_type: string
+          valid_from: string
+          valid_until: string | null
         }> = []
         for (const custId of customerIds) {
           for (const item of targetUserRules) {
@@ -349,6 +371,9 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
               customer_id: custId,
               user_id: item.user_id,
               commission_type: item.commission_type || 'inbound',
+              valid_from: item.valid_from || defaultBatchValidFrom,
+              valid_until:
+                item.valid_until !== undefined ? item.valid_until : defaultBatchValidUntil,
             })
           }
         }
@@ -364,7 +389,7 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
         // Buscar vínculos existentes dos clientes selecionados
         const { data: existingLinks, error: fetchErr } = await db
           .from('customer_users')
-          .select('id, customer_id, user_id, commission_type')
+          .select('id, customer_id, user_id, commission_type, valid_from, valid_until')
           .in('customer_id', customerIds)
 
         if (fetchErr) throw fetchErr
@@ -377,24 +402,41 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
           customer_id: string
           user_id: string
           commission_type: string
+          valid_from: string
+          valid_until: string | null
         }> = []
         for (const custId of customerIds) {
           for (const item of targetUserRules) {
             const key = `${custId}_${item.user_id}`
             const existing = existingMap.get(key)
+            const itemValidFrom = item.valid_from || defaultBatchValidFrom
+            const itemValidUntil =
+              item.valid_until !== undefined ? item.valid_until : defaultBatchValidUntil
+
             if (!existing) {
               rowsToInsert.push({
                 customer_id: custId,
                 user_id: item.user_id,
                 commission_type: item.commission_type || 'inbound',
+                valid_from: itemValidFrom,
+                valid_until: itemValidUntil,
               })
               existingMap.set(key, { customer_id: custId, user_id: item.user_id }) // Evita duplicar no batch
-            } else if (existing.id && existing.commission_type !== item.commission_type) {
-              // Se já existia mas com tipo diferente, atualizamos a regra
-              await db
-                .from('customer_users')
-                .update({ commission_type: item.commission_type || 'inbound' })
-                .eq('id', existing.id)
+            } else if (existing.id) {
+              // Se já existia, atualizamos regra e vigência se fornecido
+              const linkUpdates: Record<string, any> = {}
+              if (item.commission_type && existing.commission_type !== item.commission_type) {
+                linkUpdates.commission_type = item.commission_type
+              }
+              if (params.validFrom && existing.valid_from !== params.validFrom) {
+                linkUpdates.valid_from = params.validFrom
+              }
+              if (params.validUntil !== undefined && existing.valid_until !== params.validUntil) {
+                linkUpdates.valid_until = params.validUntil
+              }
+              if (Object.keys(linkUpdates).length > 0) {
+                await db.from('customer_users').update(linkUpdates).eq('id', existing.id)
+              }
             }
           }
         }
@@ -488,6 +530,19 @@ export async function processMonthlyRun(monthlyRunId: string): Promise<{
   return await processMonthlyRunClientSide(monthlyRunId)
 }
 
+// Format date string to YYYY-MM
+function toYearMonth(dateStr: string | null | undefined): string | null {
+  if (!dateStr) return null
+  const clean = dateStr.trim().split('T')[0]
+  const parts = clean.split('-')
+  if (parts.length >= 2) {
+    const yyyy = parts[0].padStart(4, '0')
+    const mm = parts[1].padStart(2, '0')
+    return `${yyyy}-${mm}`
+  }
+  return null
+}
+
 function getMonthsDiff(startDateStr: string | null | undefined, runMonthStr: string): number {
   if (!startDateStr) return 0
   const start = new Date(startDateStr)
@@ -497,6 +552,27 @@ function getMonthsDiff(startDateStr: string | null | undefined, runMonthStr: str
     0,
     (run.getFullYear() - start.getFullYear()) * 12 + (run.getMonth() - start.getMonth()),
   )
+}
+
+function isLinkValidForMonth(
+  validFromStr: string | null | undefined,
+  validUntilStr: string | null | undefined,
+  runMonthStr: string,
+): boolean {
+  const runYM = toYearMonth(runMonthStr)
+  if (!runYM) return true
+
+  if (validFromStr) {
+    const fromYM = toYearMonth(validFromStr)
+    if (fromYM && runYM < fromYM) return false
+  }
+
+  if (validUntilStr) {
+    const untilYM = toYearMonth(validUntilStr)
+    if (untilYM && runYM > untilYM) return false
+  }
+
+  return true
 }
 
 async function processMonthlyRunClientSide(monthlyRunId: string) {
@@ -526,12 +602,6 @@ async function processMonthlyRunClientSide(monthlyRunId: string) {
 
   const { data: cuData } = await db.from('customer_users').select('*')
   const customerUsers = (cuData as any[]) || []
-
-  // Clear prior commissions
-  const bIds = billings.map((b) => b.id)
-  if (bIds.length > 0) {
-    await db.from('commissions').delete().in('billing_id', bIds)
-  }
 
   const commissionInserts: Array<{
     billing_id: string
@@ -596,26 +666,42 @@ async function processMonthlyRunClientSide(monthlyRunId: string) {
       continue
     }
 
-    const linked = customerUsers.filter((cu) => cu.customer_id === billing.customer_id)
+    const rawLinked = customerUsers.filter((cu) => cu.customer_id === billing.customer_id)
+    // Filter by validity period (valid_from and valid_until)
+    const linked = rawLinked.filter((cu) =>
+      isLinkValidForMonth(cu.valid_from, cu.valid_until, run.month_year),
+    )
+
     const months = getMonthsDiff(cust?.start_date, run.month_year)
+    const runYM = toYearMonth(run.month_year)
+    const customerStartYM = toYearMonth(cust?.start_date)
+    const isFirstBillingMonth = Boolean(runYM && customerStartYM && runYM === customerStartYM)
 
     for (const link of linked) {
       const linkRule = (link.commission_type || cust?.origin || 'inbound').toLowerCase()
       const prof = profiles.find((p) => p.user_id === link.user_id && p.type === linkRule)
+      const fallbackProf = profiles.find((p) => p.user_id === link.user_id)
+      const activeProf = prof || fallbackProf
+
       let pct = 0
-      if (prof) {
+
+      // SETUP FEE CHECK: If this is the 1st billing month AND profile has setup_fee_percentage configured
+      const hasSetupFee =
+        activeProf &&
+        activeProf.setup_fee_percentage !== null &&
+        activeProf.setup_fee_percentage !== undefined &&
+        !isNaN(Number(activeProf.setup_fee_percentage))
+
+      if (isFirstBillingMonth && hasSetupFee) {
+        pct = Number(activeProf.setup_fee_percentage) || 0
+      } else if (activeProf) {
         if (linkRule === 'outbound') {
           pct =
             months <= 12
-              ? Number(prof.default_percentage_year_1) || 0
-              : Number(prof.default_percentage_year_2_plus) || 0
+              ? Number(activeProf.default_percentage_year_1) || 0
+              : Number(activeProf.default_percentage_year_2_plus) || 0
         } else {
-          pct = Number(prof.default_percentage_year_1) || 0
-        }
-      } else {
-        const fallbackProf = profiles.find((p) => p.user_id === link.user_id)
-        if (fallbackProf) {
-          pct = Number(fallbackProf.default_percentage_year_1) || 0
+          pct = Number(activeProf.default_percentage_year_1) || 0
         }
       }
 
@@ -628,6 +714,14 @@ async function processMonthlyRunClientSide(monthlyRunId: string) {
         commission_amount: commissionVal,
       })
     }
+  }
+
+  // Safe atomic-like replacement pattern:
+  // First clear prior commissions only after all computations succeeded, then insert new ones
+  const bIds = billings.map((b) => b.id)
+  if (bIds.length > 0) {
+    const { error: delCommErr } = await db.from('commissions').delete().in('billing_id', bIds)
+    if (delCommErr) throw delCommErr
   }
 
   if (commissionInserts.length > 0) {
@@ -744,6 +838,8 @@ export async function upsertCommissionProfile(
         type: profile.type,
         default_percentage_year_1: profile.default_percentage_year_1,
         default_percentage_year_2_plus: profile.default_percentage_year_2_plus,
+        setup_fee_percentage:
+          profile.setup_fee_percentage !== undefined ? profile.setup_fee_percentage : null,
       })
       .eq('id', profile.id)
     if (error) throw error
@@ -754,6 +850,8 @@ export async function upsertCommissionProfile(
         type: profile.type,
         default_percentage_year_1: profile.default_percentage_year_1 || 0,
         default_percentage_year_2_plus: profile.default_percentage_year_2_plus || 0,
+        setup_fee_percentage:
+          profile.setup_fee_percentage !== undefined ? profile.setup_fee_percentage : null,
       },
     ])
     if (error) throw error
