@@ -70,14 +70,89 @@ export async function createMonthlyRun(
 // Customers & Linking
 // ==========================================
 
-export async function getCustomers(): Promise<Customer[]> {
-  const { data, error } = await db
-    .from('customers')
-    .select('*, customer_users(*, user:users(*))')
-    .order('name')
+export async function getCustomers(searchQuery?: string): Promise<Customer[]> {
+  let query = db.from('customers').select('*, customer_users(*, user:users(*))').order('name')
+
+  if (searchQuery && searchQuery.trim().length > 0) {
+    const term = searchQuery.trim()
+    // Filter by name or customer_code (case-insensitive)
+    query = query.or(`name.ilike.%${term}%,customer_code.ilike.%${term}%`)
+  }
+
+  const { data, error } = await query
 
   if (error) throw error
   return (data as unknown as Customer[]) || []
+}
+
+export async function getCustomerById(id: string): Promise<Customer | null> {
+  const { data, error } = await db
+    .from('customers')
+    .select('*, customer_users(*, user:users(*))')
+    .eq('id', id)
+    .single()
+
+  if (error) return null
+  return data as unknown as Customer
+}
+
+export async function updateCustomer(
+  id: string,
+  updates: {
+    name?: string
+    origin?: 'inbound' | 'outbound' | null
+    start_date?: string | null
+    no_commission_flag?: boolean
+  },
+): Promise<Customer> {
+  const { data, error } = await db
+    .from('customers')
+    .update(updates)
+    .eq('id', id)
+    .select('*, customer_users(*, user:users(*))')
+    .single()
+
+  if (error) throw error
+  return data as unknown as Customer
+}
+
+export async function listEligibleCommissionUsers(): Promise<AppUser[]> {
+  const { data, error } = await db
+    .from('users')
+    .select('*')
+    .in('role', ['manager', 'sales'])
+    .order('name')
+
+  if (error) throw error
+  return (data as unknown as AppUser[]) || []
+}
+
+export async function addUserToCustomer(customerId: string, userId: string): Promise<void> {
+  // Check if link already exists
+  const { data: existing } = await db
+    .from('customer_users')
+    .select('id')
+    .eq('customer_id', customerId)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (existing) {
+    return // Already linked, avoid duplicates
+  }
+
+  const { error } = await db.from('customer_users').insert([
+    {
+      customer_id: customerId,
+      user_id: userId,
+    },
+  ])
+
+  if (error) throw error
+}
+
+export async function removeUserFromCustomer(customerUserId: string): Promise<void> {
+  const { error } = await db.from('customer_users').delete().eq('id', customerUserId)
+  if (error) throw error
 }
 
 export async function upsertCustomerByCode(customerCode: string, name: string): Promise<Customer> {

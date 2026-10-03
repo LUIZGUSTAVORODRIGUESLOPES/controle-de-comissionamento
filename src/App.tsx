@@ -6,6 +6,7 @@ import Login from '@/pages/Login'
 import Dashboard from '@/pages/Dashboard'
 import Upload from '@/pages/Upload'
 import Pendencies from '@/pages/Pendencies'
+import Customers from '@/pages/Customers'
 import Reports from '@/pages/Reports'
 import Settings from '@/pages/Settings'
 import NotFound from '@/pages/NotFound'
@@ -35,6 +36,7 @@ export default function App() {
               {/* Default Redirect to Dashboard */}
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/customers" element={<Customers />} />
               <Route path="/reports" element={<Reports />} />
 
               {/* Admin & Manager Only Routes */}

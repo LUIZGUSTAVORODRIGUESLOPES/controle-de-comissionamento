@@ -7,6 +7,7 @@ import {
   Upload,
   AlertTriangle,
   BarChart3,
+  Building2,
   Settings,
   LogOut,
   Menu,
@@ -101,6 +102,12 @@ export default function Layout() {
       visible: true,
     },
     {
+      name: 'Clientes',
+      path: '/customers',
+      icon: Building2,
+      visible: true,
+    },
+    {
       name: 'Upload Mensal',
       path: '/upload',
       icon: Upload,
@@ -130,6 +137,7 @@ export default function Layout() {
   const getPageTitle = () => {
     const p = location.pathname
     if (p.startsWith('/dashboard')) return 'Dashboard de Comissões'
+    if (p.startsWith('/customers')) return 'Gestão de Clientes'
     if (p.startsWith('/upload')) return 'Upload Mensal de Faturamento'
     if (p.startsWith('/pendencies')) return 'Auditoria & Gatekeeper de Pendências'
     if (p.startsWith('/reports')) return 'Relatórios e Folha de Comissões'
