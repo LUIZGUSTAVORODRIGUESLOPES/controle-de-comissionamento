@@ -10,6 +10,7 @@ import Pendencies from '@/pages/Pendencies'
 import Customers from '@/pages/Customers'
 import Reports from '@/pages/Reports'
 import Settings from '@/pages/Settings'
+import RevenueDashboard from '@/pages/RevenueDashboard'
 import NotFound from '@/pages/NotFound'
 import { Toaster } from '@/components/ui/toaster'
 import { Toaster as Sonner } from '@/components/ui/sonner'
@@ -51,6 +52,14 @@ export default function App() {
               <Route path="/reports" element={<Reports />} />
 
               {/* Admin & Manager Only Routes */}
+              <Route
+                path="/revenue-dashboard"
+                element={
+                  <ProtectedRoute allowedRoles={['admin', 'manager']}>
+                    <RevenueDashboard />
+                  </ProtectedRoute>
+                }
+              />
               <Route
                 path="/upload"
                 element={

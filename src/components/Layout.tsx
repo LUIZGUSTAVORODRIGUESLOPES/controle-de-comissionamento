@@ -7,6 +7,7 @@ import {
   Upload,
   AlertTriangle,
   BarChart3,
+  LineChart,
   Building2,
   Settings,
   LogOut,
@@ -102,6 +103,12 @@ export default function Layout() {
       visible: true,
     },
     {
+      name: 'Dashboard de Faturamento',
+      path: '/revenue-dashboard',
+      icon: LineChart,
+      visible: !isSales,
+    },
+    {
       name: 'Clientes',
       path: '/customers',
       icon: Building2,
@@ -137,6 +144,7 @@ export default function Layout() {
   const getPageTitle = () => {
     const p = location.pathname
     if (p.startsWith('/dashboard')) return 'Dashboard de Comissões'
+    if (p.startsWith('/revenue-dashboard')) return 'Dashboard de Faturamento Corporativo'
     if (p.startsWith('/customers')) return 'Gestão de Clientes'
     if (p.startsWith('/upload')) return 'Upload Mensal de Faturamento'
     if (p.startsWith('/pendencies')) return 'Auditoria & Gatekeeper de Pendências'
