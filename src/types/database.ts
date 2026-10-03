@@ -1,7 +1,7 @@
 export type UserRole = 'admin' | 'manager' | 'sales'
 export type CustomerOrigin = 'inbound' | 'outbound'
 export type TaxDeductionType = 'percentage' | 'formula'
-export type MonthlyRunStatus = 'pending' | 'processed'
+export type MonthlyRunStatus = 'pending' | 'processed' | 'paid'
 
 export interface AppUser {
   id: string

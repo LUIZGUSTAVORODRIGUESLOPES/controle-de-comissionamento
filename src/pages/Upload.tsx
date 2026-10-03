@@ -66,8 +66,14 @@ export default function Upload() {
       try {
         const existing = await getMonthlyRunByMonth(selectedMonth)
         if (existing) {
+          const statusLabel =
+            existing.status === 'paid'
+              ? 'Mês Fechado / Pago (Bloqueado)'
+              : existing.status === 'processed'
+                ? 'Processado'
+                : 'Pendente'
           setExistingRunError(
-            `O mês de ${selectedMonth} já foi iniciado com status "${existing.status === 'processed' ? 'Processado' : 'Pendente'}".`,
+            `O mês de ${selectedMonth} já foi iniciado com status "${statusLabel}".`,
           )
         } else {
           setExistingRunError(null)

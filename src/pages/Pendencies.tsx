@@ -140,8 +140,10 @@ export default function Pendencies() {
     return links.length === 0
   })
 
+  const isPaid = selectedRun?.status === 'paid'
   const isProcessed = selectedRun?.status === 'processed'
-  const pendingCount = isProcessed ? 0 : pendingBillings.length
+  const isLocked = isProcessed || isPaid
+  const pendingCount = isLocked ? 0 : pendingBillings.length
 
   const formatBRL = (val: number) => {
     return new Intl.NumberFormat('pt-BR', {
@@ -297,7 +299,12 @@ export default function Pendencies() {
             <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
               Pendências do Mês {selectedRun ? formatMonth(selectedRun.month_year) : ''}
             </h2>
-            {isProcessed ? (
+            {isPaid ? (
+              <Badge className="bg-slate-900 text-white border-slate-700 font-semibold gap-1">
+                <Lock className="h-3 w-3 text-amber-400" />
+                Mês Fechado / Pago
+              </Badge>
+            ) : isProcessed ? (
               <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300 font-semibold">
                 Processado
               </Badge>
@@ -316,13 +323,18 @@ export default function Pendencies() {
         <div className="flex items-center gap-3">
           {runs.length > 1 && (
             <Select value={selectedRun?.id || ''} onValueChange={handleSelectRun}>
-              <SelectTrigger className="w-48 h-10 border-slate-300">
+              <SelectTrigger className="w-56 h-10 border-slate-300">
                 <SelectValue placeholder="Selecione o mês" />
               </SelectTrigger>
               <SelectContent>
                 {runs.map((r) => (
                   <SelectItem key={r.id} value={r.id}>
-                    {formatMonth(r.month_year)} ({r.status === 'processed' ? 'OK' : 'Pendente'})
+                    {formatMonth(r.month_year)}{' '}
+                    {r.status === 'paid'
+                      ? '🔒 (Pago)'
+                      : r.status === 'processed'
+                        ? '✓ (Processado)'
+                        : '⏳ (Pendente)'}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -332,7 +344,7 @@ export default function Pendencies() {
           {/* Process Button with Gatekeeper validation */}
           <Button
             onClick={handleProcessMonth}
-            disabled={pendingCount > 0 || isProcessed || isProcessing}
+            disabled={pendingCount > 0 || isLocked || isProcessing}
             className="bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold h-11 px-6 shadow-md shadow-teal-900/10 gap-2 disabled:bg-slate-200 disabled:text-slate-500"
           >
             {isProcessing ? (
@@ -351,13 +363,30 @@ export default function Pendencies() {
       </div>
 
       {/* Gatekeeper Banners */}
-      {isProcessed ? (
+      {isPaid ? (
+        <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 text-white flex items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center gap-3">
+            <Lock className="h-5 w-5 text-amber-400 shrink-0" />
+            <div className="text-sm">
+              <span className="font-semibold text-white">Mês Fechado e Pago.</span> Este período
+              está completamente travado por regras de compliance. Alterações de clientes,
+              faturamentos e impostos estão desabilitadas.
+            </div>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => navigate('/reports')}
+            className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shrink-0"
+          >
+            Ver Relatório Travado
+          </Button>
+        </div>
+      ) : isProcessed ? (
         <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 flex items-center gap-3">
           <ShieldCheck className="h-5 w-5 text-blue-600 shrink-0" />
           <div className="text-sm">
             <span className="font-semibold">Este mês já foi processado e auditado.</span> As
-            comissões foram calculadas e estão disponíveis na aba de relatórios. Modificações foram
-            bloqueadas.
+            comissões foram calculadas e estão disponíveis na aba de relatórios.
           </div>
         </div>
       ) : pendingCount > 0 ? (
@@ -450,9 +479,9 @@ export default function Pendencies() {
                         <td className="py-3.5 px-4 text-right space-x-2">
                           <Button
                             size="sm"
-                            disabled={isProcessed}
+                            disabled={isLocked}
                             onClick={() => handleOpenLinkModal(b)}
-                            className="bg-[#0F766E] hover:bg-[#115E59] text-white text-xs gap-1.5 h-8 font-semibold shadow-sm"
+                            className="bg-[#0F766E] hover:bg-[#115E59] text-white text-xs gap-1.5 h-8 font-semibold shadow-sm disabled:opacity-50"
                           >
                             <UserCheck className="h-3.5 w-3.5" />
                             <span>Vincular Vendedor</span>
@@ -460,12 +489,12 @@ export default function Pendencies() {
                           <Button
                             size="sm"
                             variant="outline"
-                            disabled={isProcessed}
+                            disabled={isLocked}
                             onClick={() => {
                               setNoCommTargetBilling(b)
                               setNoCommConfirmOpen(true)
                             }}
-                            className="text-xs border-slate-300 text-slate-700 hover:bg-slate-100 h-8 gap-1.5"
+                            className="text-xs border-slate-300 text-slate-700 hover:bg-slate-100 h-8 gap-1.5 disabled:opacity-50"
                           >
                             <Ban className="h-3.5 w-3.5 text-slate-500" />
                             <span>Marcar Sem Comissão</span>

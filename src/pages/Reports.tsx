@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/hooks/use-auth'
+import { supabase } from '@/lib/supabase/client'
 import {
   getMonthlyRuns,
   getBillingsForRun,
   getCommissionsForRun,
   getAllUsers,
+  markMonthlyRunAsPaid,
+  unlockMonthlyRun,
 } from '@/services/commissionService'
 import type { MonthlyRun, Billing, Commission, AppUser } from '@/types/database'
 import { useToast } from '@/hooks/use-toast'
@@ -21,10 +24,17 @@ import {
   BarChart3,
   FileSpreadsheet,
   CheckCircle2,
+  Lock,
+  Unlock,
+  AlertTriangle,
+  ShieldCheck,
+  Check,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -32,6 +42,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import {
   ResponsiveContainer,
   PieChart,
@@ -60,30 +88,46 @@ export default function Reports() {
   // Expanded user rows in payroll
   const [expandedUsers, setExpandedUsers] = useState<Record<string, boolean>>({})
 
+  // Compliance & Status actions state
+  const [markingPaid, setMarkingPaid] = useState(false)
+  const [confirmPaidOpen, setConfirmPaidOpen] = useState(false)
+  const [unlockModalOpen, setUnlockModalOpen] = useState(false)
+  const [adminPassword, setAdminPassword] = useState('')
+  const [unlocking, setUnlocking] = useState(false)
+  const [unlockError, setUnlockError] = useState<string | null>(null)
+
   const isSales = appUser?.role === 'sales'
+  const isAdmin = appUser?.role === 'admin'
+
+  const loadInitialData = async (preferredRunId?: string) => {
+    setLoading(true)
+    try {
+      const [runsData, usersData] = await Promise.all([getMonthlyRuns(), getAllUsers()])
+
+      // Include runs that are processed or paid (fechados)
+      const visibleRuns = runsData.filter((r) => r.status === 'processed' || r.status === 'paid')
+      setRuns(visibleRuns)
+      setAllUsers(usersData)
+
+      if (visibleRuns.length > 0) {
+        const targetRun = preferredRunId
+          ? visibleRuns.find((r) => r.id === preferredRunId) || visibleRuns[0]
+          : visibleRuns[0]
+        setSelectedRunId(targetRun.id)
+        await loadRunDetails(targetRun.id)
+      } else {
+        setSelectedRunId('')
+        setBillings([])
+        setCommissions([])
+      }
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    async function loadInitialData() {
-      setLoading(true)
-      try {
-        const [runsData, usersData] = await Promise.all([getMonthlyRuns(), getAllUsers()])
-
-        const processedRuns = runsData.filter((r) => r.status === 'processed')
-        setRuns(processedRuns)
-        setAllUsers(usersData)
-
-        if (processedRuns.length > 0) {
-          const defaultRun = processedRuns[0]
-          setSelectedRunId(defaultRun.id)
-          await loadRunDetails(defaultRun.id)
-        }
-      } catch (err) {
-        console.error(err)
-      } finally {
-        setLoading(false)
-      }
-    }
-
     loadInitialData()
   }, [])
 
@@ -203,6 +247,73 @@ export default function Reports() {
     liquido: Number(b.net_amount),
   }))
 
+  // Compliance actions: Mark as Paid
+  const handleMarkAsPaid = async () => {
+    if (!selectedRunId) return
+    setMarkingPaid(true)
+    try {
+      await markMonthlyRunAsPaid(selectedRunId)
+      toast({
+        title: 'Mês Fechado e Pago com Sucesso!',
+        description: 'Os valores e impostos foram travados contra alterações acidentais.',
+      })
+      setConfirmPaidOpen(false)
+      await loadInitialData(selectedRunId)
+    } catch (err: any) {
+      console.error(err)
+      toast({
+        title: 'Erro ao fechar mês',
+        description: err.message || 'Falha ao atualizar status para pago.',
+        variant: 'destructive',
+      })
+    } finally {
+      setMarkingPaid(false)
+    }
+  }
+
+  // Compliance actions: Unlock (Estorno Seguro) with password reauthentication
+  const handleConfirmUnlock = async () => {
+    if (!selectedRunId || !user?.email) return
+    if (!adminPassword) {
+      setUnlockError('Digite a sua senha de administrador para prosseguir.')
+      return
+    }
+
+    setUnlocking(true)
+    setUnlockError(null)
+
+    try {
+      // 1. Re-authenticate admin with GoTrue signInWithPassword
+      const { error: authErr } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: adminPassword,
+      })
+
+      if (authErr) {
+        setUnlockError('Senha incorreta. Não foi possível autenticar o estorno.')
+        setUnlocking(false)
+        return
+      }
+
+      // 2. Unlock monthly run back to 'processed'
+      await unlockMonthlyRun(selectedRunId, 'processed')
+
+      toast({
+        title: 'Mês Desbloqueado com Sucesso',
+        description: 'O status retornou para "Processado". As travas de auditoria foram liberadas.',
+      })
+
+      setUnlockModalOpen(false)
+      setAdminPassword('')
+      await loadInitialData(selectedRunId)
+    } catch (err: any) {
+      console.error(err)
+      setUnlockError(err.message || 'Falha ao desbloquear o mês no banco de dados.')
+    } finally {
+      setUnlocking(false)
+    }
+  }
+
   // Export CSV
   const handleExportCSV = () => {
     let csv = 'Vendedor,Cargo,Salário Fixo,Comissões,Total a Pagar\n'
@@ -245,25 +356,38 @@ export default function Reports() {
   return (
     <div className="space-y-6">
       {/* Month Selector & Action Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm print:hidden">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm print:hidden">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5">
             <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
               {isSales ? 'Meu Holerite de Comissões' : 'Relatórios & Folha de Comissões'}
             </h2>
-            <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300 font-semibold">
-              Processado
-            </Badge>
+            {selectedRun?.status === 'paid' ? (
+              <Badge className="bg-slate-900 text-white border-slate-700 font-semibold gap-1.5 px-3 py-1 shadow-sm">
+                <Lock className="h-3.5 w-3.5 text-amber-400" />
+                <span>Mês Fechado / Pago</span>
+              </Badge>
+            ) : (
+              <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300 font-semibold gap-1.5 px-3 py-1">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                <span>Processado</span>
+              </Badge>
+            )}
           </div>
           <p className="text-sm text-slate-500 mt-1">
             Mês de Referência:{' '}
             <span className="font-semibold text-slate-700">
               {formatMonth(selectedRun?.month_year)}
             </span>
+            {selectedRun?.status === 'paid' && (
+              <span className="ml-2 text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-medium">
+                🔒 Registro imutável de compliance financeiro
+              </span>
+            )}
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Select value={selectedRunId} onValueChange={handleRunChange}>
             <SelectTrigger className="w-52 h-10 border-slate-300">
               <SelectValue placeholder="Selecione o mês" />
@@ -271,11 +395,43 @@ export default function Reports() {
             <SelectContent>
               {runs.map((r) => (
                 <SelectItem key={r.id} value={r.id}>
-                  {formatMonth(r.month_year)}
+                  {formatMonth(r.month_year)} {r.status === 'paid' ? '🔒 (Pago)' : '✓ (Processado)'}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+
+          {/* ADMIN / MANAGER: Compliance Actions */}
+          {!isSales && (
+            <>
+              {/* Button: Fechar Mês e Marcar como Pago (visible when status is 'processed') */}
+              {selectedRun?.status === 'processed' && (
+                <Button
+                  onClick={() => setConfirmPaidOpen(true)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center gap-2 h-10 px-4 shadow-sm"
+                >
+                  <Lock className="h-4 w-4" />
+                  <span>Fechar Mês e Marcar como Pago</span>
+                </Button>
+              )}
+
+              {/* Button: Desbloquear Mês (Estorno) (visible ONLY for Admin when status is 'paid') */}
+              {selectedRun?.status === 'paid' && isAdmin && (
+                <Button
+                  onClick={() => {
+                    setUnlockError(null)
+                    setAdminPassword('')
+                    setUnlockModalOpen(true)
+                  }}
+                  variant="outline"
+                  className="border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 font-semibold flex items-center gap-2 h-10 px-4"
+                >
+                  <Unlock className="h-4 w-4 text-amber-700" />
+                  <span>Desbloquear Mês (Estorno)</span>
+                </Button>
+              )}
+            </>
+          )}
 
           {isSales ? (
             <Button
@@ -302,6 +458,26 @@ export default function Reports() {
       {isSales ? (
         <div className="space-y-6">
           <div className="p-6 bg-white rounded-xl border border-slate-200 shadow-sm space-y-4 print:border-none print:shadow-none">
+            {/* Compliance Banner for Sales View */}
+            {selectedRun?.status === 'paid' ? (
+              <div className="p-3.5 rounded-lg bg-slate-900 text-white flex items-center justify-between print:border print:border-slate-300 print:bg-slate-100 print:text-slate-900">
+                <div className="flex items-center gap-2.5">
+                  <Lock className="h-4 w-4 text-amber-400 print:text-slate-800" />
+                  <span className="text-xs font-semibold">
+                    Extrato Finalizado e Pago &bull; Mês Fechado pela Diretoria Financeira
+                  </span>
+                </div>
+                <Badge className="bg-amber-400/20 text-amber-300 border-amber-400/30 text-[11px] font-bold print:bg-slate-200 print:text-slate-800">
+                  Bloqueado para Edições
+                </Badge>
+              </div>
+            ) : (
+              <div className="p-3 rounded-lg bg-teal-50 border border-teal-200 text-teal-900 text-xs flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-teal-600" />
+                <span>Extrato apurado &bull; Aguardando pagamento e fechamento final.</span>
+              </div>
+            )}
+
             <div className="flex items-center justify-between border-b pb-4">
               <div>
                 <p className="text-xs uppercase tracking-wider text-slate-400 font-bold">
@@ -419,6 +595,49 @@ export default function Reports() {
       ) : (
         /* ADMIN / MANAGER VIEW */
         <div className="space-y-6">
+          {/* Compliance Banner for Locked State (Admin / Manager) */}
+          {selectedRun?.status === 'paid' && (
+            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 text-white flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-md">
+              <div className="flex items-start gap-3">
+                <div className="h-9 w-9 rounded-lg bg-amber-400/20 text-amber-300 border border-amber-400/30 flex items-center justify-center shrink-0">
+                  <Lock className="h-5 w-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold flex items-center gap-2 text-white">
+                    <span>Mês Fechado e Pago — Camada de Compliance Ativa</span>
+                    <Badge className="bg-amber-400/20 text-amber-300 border-amber-400/40 text-[10px] font-bold">
+                      Somente Leitura
+                    </Badge>
+                  </h4>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Os valores de faturamento bruto, deduções fiscais e comissões deste mês estão
+                    blindados contra edições e exclusões no banco de dados (Row Level Security).
+                  </p>
+                </div>
+              </div>
+
+              {isAdmin ? (
+                <Button
+                  onClick={() => {
+                    setUnlockError(null)
+                    setAdminPassword('')
+                    setUnlockModalOpen(true)
+                  }}
+                  variant="outline"
+                  size="sm"
+                  className="border-amber-400/40 bg-amber-400/10 hover:bg-amber-400/20 text-amber-300 shrink-0 text-xs font-semibold h-9"
+                >
+                  <Unlock className="h-3.5 w-3.5 mr-1.5" />
+                  <span>Estornar / Desbloquear</span>
+                </Button>
+              ) : (
+                <span className="text-xs text-slate-400 italic">
+                  Apenas administradores podem solicitar estorno.
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Summary Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <Card className="border-slate-200 shadow-sm">
@@ -718,6 +937,136 @@ export default function Reports() {
           </div>
         </div>
       )}
+
+      {/* MODAL: Confirmação de Fechar Mês e Marcar como Pago */}
+      <AlertDialog open={confirmPaidOpen} onOpenChange={setConfirmPaidOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-slate-900">
+              <Lock className="h-5 w-5 text-emerald-600" />
+              <span>Fechar Mês e Marcar como Pago?</span>
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2 text-xs text-slate-600">
+              <p>
+                Você está finalizando a apuração de{' '}
+                <strong className="text-slate-900">{formatMonth(selectedRun?.month_year)}</strong>.
+              </p>
+              <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 text-amber-900 text-xs space-y-1">
+                <p className="font-semibold flex items-center gap-1.5">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+                  <span>Trava de Histórico e Auditoria</span>
+                </p>
+                <p className="text-slate-700">
+                  Após fechar o mês, todas as tabelas de faturamentos e comissões deste período
+                  serão bloqueadas para alterações e recálculos no banco de dados. Apenas um
+                  Administrador poderá efetuar estorno mediante confirmação de senha.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={markingPaid}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleMarkAsPaid}
+              disabled={markingPaid}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+            >
+              {markingPaid ? 'Fechando mês...' : 'Confirmar Fechamento e Pagamento'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* MODAL: Override de Administrador (Estorno com Autenticação de Senha) */}
+      <Dialog open={unlockModalOpen} onOpenChange={setUnlockModalOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-rose-700 text-lg">
+              <AlertTriangle className="h-5 w-5 text-rose-600" />
+              <span>Desbloquear Mês (Estorno de Pagamento)</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-500">
+              Ação restrita a Administradores com impacto em auditoria e compliance contábil.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-900 text-xs space-y-1">
+              <p className="font-bold flex items-center gap-1.5">
+                <ShieldCheck className="h-4 w-4 text-rose-600" />
+                <span>Alerta de Quebra de Auditoria:</span>
+              </p>
+              <p className="text-slate-700 leading-relaxed">
+                Você está prestes a reabrir o mês de{' '}
+                <strong className="text-slate-900">{formatMonth(selectedRun?.month_year)}</strong>.
+                Isso permitirá que faturamentos sejam recalculados e comissões alteradas. Confirme
+                sua identidade como administrador digitando sua senha de acesso.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label
+                htmlFor="admin_password"
+                className="text-xs font-semibold text-slate-700 uppercase tracking-wider"
+              >
+                Senha do Administrador ({user?.email})
+              </Label>
+              <Input
+                id="admin_password"
+                type="password"
+                autoComplete="current-password"
+                placeholder="Digite a sua senha de login..."
+                value={adminPassword}
+                onChange={(e) => {
+                  setAdminPassword(e.target.value)
+                  setUnlockError(null)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleConfirmUnlock()
+                  }
+                }}
+                className="h-10 border-slate-300"
+              />
+              {unlockError && (
+                <p className="text-xs text-rose-600 font-semibold flex items-center gap-1 mt-1">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  <span>{unlockError}</span>
+                </p>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              disabled={unlocking}
+              onClick={() => {
+                setUnlockModalOpen(false)
+                setAdminPassword('')
+                setUnlockError(null)
+              }}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleConfirmUnlock}
+              disabled={unlocking || !adminPassword}
+              className="bg-rose-600 hover:bg-rose-700 text-white font-semibold"
+            >
+              {unlocking ? (
+                <>
+                  <div className="h-4 w-4 rounded-full border-2 border-white border-t-transparent animate-spin mr-2" />
+                  <span>Validando credenciais...</span>
+                </>
+              ) : (
+                <span>Confirmar Estorno e Desbloquear</span>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

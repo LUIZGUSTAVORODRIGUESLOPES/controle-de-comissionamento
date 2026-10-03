@@ -21,6 +21,7 @@ import {
   CheckCircle2,
   Clock,
   ExternalLink,
+  Lock,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -409,6 +410,11 @@ export default function Dashboard() {
                             <Badge className="bg-amber-100 text-amber-800 border-amber-300 font-semibold gap-1">
                               <Clock className="h-3 w-3" />
                               Pendente (Auditoria)
+                            </Badge>
+                          ) : r.status === 'paid' ? (
+                            <Badge className="bg-slate-900 text-white border-slate-700 font-semibold gap-1">
+                              <Lock className="h-3 w-3 text-amber-400" />
+                              Mês Fechado / Pago
                             </Badge>
                           ) : (
                             <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300 font-semibold gap-1">

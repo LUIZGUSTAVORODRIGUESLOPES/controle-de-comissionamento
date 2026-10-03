@@ -77,6 +77,19 @@ Deno.serve(async (req: Request) => {
       )
     }
 
+    if (run.status === 'paid') {
+      return new Response(
+        JSON.stringify({
+          error:
+            'Este mês já está fechado e marcado como pago. O recálculo está bloqueado por compliance.',
+        }),
+        {
+          status: 403,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        },
+      )
+    }
+
     const globalBilling = Number(run.gross_company_billing) || 0
 
     // 2. Fetch all billings for this run with customer

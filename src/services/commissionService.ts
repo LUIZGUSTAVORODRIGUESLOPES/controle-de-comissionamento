@@ -66,6 +66,33 @@ export async function createMonthlyRun(
   return data as unknown as MonthlyRun
 }
 
+export async function markMonthlyRunAsPaid(monthlyRunId: string): Promise<MonthlyRun> {
+  const { data, error } = await db
+    .from('monthly_runs')
+    .update({ status: 'paid' })
+    .eq('id', monthlyRunId)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as unknown as MonthlyRun
+}
+
+export async function unlockMonthlyRun(
+  monthlyRunId: string,
+  targetStatus: 'processed' | 'pending' = 'processed',
+): Promise<MonthlyRun> {
+  const { data, error } = await db
+    .from('monthly_runs')
+    .update({ status: targetStatus })
+    .eq('id', monthlyRunId)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as unknown as MonthlyRun
+}
+
 // ==========================================
 // Customers & Linking
 // ==========================================
@@ -318,6 +345,12 @@ async function processMonthlyRunClientSide(monthlyRunId: string) {
   // 1. Fetch run
   const run = await getMonthlyRunById(monthlyRunId)
   if (!run) throw new Error('Execução não encontrada')
+
+  if (run.status === 'paid') {
+    throw new Error(
+      'Este mês já está fechado e marcado como pago. O recálculo está bloqueado por compliance.',
+    )
+  }
 
   const globalBilling = Number(run.gross_company_billing) || 0
 
