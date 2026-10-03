@@ -654,7 +654,7 @@ function getMonthsDiff(startDateStr: string | null | undefined, runMonthStr: str
   )
 }
 
-function isLinkValidForMonth(
+function isPeriodValidForMonth(
   validFromStr: string | null | undefined,
   validUntilStr: string | null | undefined,
   runMonthStr: string,
@@ -673,6 +673,64 @@ function isLinkValidForMonth(
   }
 
   return true
+}
+
+function isLinkValidForMonth(
+  validFromStr: string | null | undefined,
+  validUntilStr: string | null | undefined,
+  runMonthStr: string,
+): boolean {
+  return isPeriodValidForMonth(validFromStr, validUntilStr, runMonthStr)
+}
+
+// Find best matching commission profile for user, rule type and competence month
+export function findActiveCommissionProfile(
+  profiles: CommissionProfile[],
+  userId: string,
+  ruleType: string,
+  runMonthStr: string,
+): CommissionProfile | null {
+  // Filter active profiles for this user and type where runMonth is within [valid_from, valid_until]
+  const matching = (profiles || []).filter((p) => {
+    if (p.user_id !== userId) return false
+    if ((p.type || '').toLowerCase() !== ruleType.toLowerCase()) return false
+    if (p.is_active === false) return false
+    return isPeriodValidForMonth(p.valid_from, p.valid_until, runMonthStr)
+  })
+
+  if (matching.length > 0) {
+    // Sort descending by valid_from (most recent first), then created_at descending
+    matching.sort((a, b) => {
+      const aFrom = a.valid_from ? new Date(a.valid_from).getTime() : 0
+      const bFrom = b.valid_from ? new Date(b.valid_from).getTime() : 0
+      if (bFrom !== aFrom) return bFrom - aFrom
+      const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0
+      const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0
+      return bCreated - aCreated
+    })
+    return matching[0]
+  }
+
+  // Fallback: any active profile of this user matching validity
+  const fallback = (profiles || []).filter((p) => {
+    if (p.user_id !== userId) return false
+    if (p.is_active === false) return false
+    return isPeriodValidForMonth(p.valid_from, p.valid_until, runMonthStr)
+  })
+
+  if (fallback.length > 0) {
+    fallback.sort((a, b) => {
+      const aFrom = a.valid_from ? new Date(a.valid_from).getTime() : 0
+      const bFrom = b.valid_from ? new Date(b.valid_from).getTime() : 0
+      if (bFrom !== aFrom) return bFrom - aFrom
+      const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0
+      const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0
+      return bCreated - aCreated
+    })
+    return fallback[0]
+  }
+
+  return null
 }
 
 async function processMonthlyRunClientSide(monthlyRunId: string) {
@@ -779,9 +837,12 @@ async function processMonthlyRunClientSide(monthlyRunId: string) {
 
     for (const link of linked) {
       const linkRule = (link.commission_type || cust?.origin || 'inbound').toLowerCase()
-      const prof = profiles.find((p) => p.user_id === link.user_id && p.type === linkRule)
-      const fallbackProf = profiles.find((p) => p.user_id === link.user_id)
-      const activeProf = prof || fallbackProf
+      const activeProf = findActiveCommissionProfile(
+        profiles,
+        link.user_id,
+        linkRule,
+        run.month_year,
+      )
 
       let pct = 0
 
@@ -915,13 +976,27 @@ export async function updateUser(
 
   if (error) throw error
 
-  // Se o usuário foi alterado para role = 'admin', remover vínculos comerciais e perfis de comissão existentes
+  // Se o usuário foi alterado para role = 'admin', remover vínculos comerciais e encerrar/deletar perfis de comissão existentes
   if (updates.role === 'admin') {
     try {
-      await db.from('commission_profiles').delete().eq('user_id', id)
+      // 1. Tentar deletar perfis sem histórico; se houver histórico, encerrar definindo valid_until = hoje e is_active = false
+      const { data: userProfiles } = await db
+        .from('commission_profiles')
+        .select('*')
+        .eq('user_id', id)
+      const todayStr = new Date().toISOString().split('T')[0]
+      for (const prof of userProfiles || []) {
+        try {
+          await deleteCommissionProfile(prof.id)
+        } catch (delErr: any) {
+          // Se falhou por proteção de histórico, encerra a regra
+          await endCommissionProfile(prof.id, todayStr)
+        }
+      }
+      // 2. Encerrar ou remover customer_users
       await db.from('customer_users').delete().eq('user_id', id)
     } catch (cleanupErr) {
-      console.warn('Erro ao limpar perfis e vínculos ao promover usuário a admin:', cleanupErr)
+      console.warn('Erro ao tratar perfis e vínculos ao promover usuário a admin:', cleanupErr)
     }
   }
 
@@ -937,14 +1012,20 @@ export async function getAllCommissionProfiles(): Promise<CommissionProfile[]> {
   const { data, error } = await db
     .from('commission_profiles')
     .select('*, user:users(*)')
-    .order('created_at', { ascending: false })
+    .order('valid_from', { ascending: false })
 
   if (error) throw error
   return (data as unknown as CommissionProfile[]) || []
 }
 
 export async function upsertCommissionProfile(
-  profile: Partial<CommissionProfile> & { user_id: string; type: 'inbound' | 'outbound' },
+  profile: Partial<CommissionProfile> & {
+    user_id: string
+    type: 'inbound' | 'outbound'
+    valid_from?: string
+    valid_until?: string | null
+    is_active?: boolean
+  },
 ): Promise<void> {
   // Regra de Negócio: Administradores não podem possuir perfil de comissão
   const { data: targetUser } = await db
@@ -957,6 +1038,49 @@ export async function upsertCommissionProfile(
     throw new Error('Utilizadores com perfil Administrador não podem possuir regras de comissão.')
   }
 
+  const validFromVal = profile.valid_from || new Date().toISOString().split('T')[0]
+  const validUntilVal = profile.valid_until !== undefined ? profile.valid_until : null
+  const isActiveVal = profile.is_active !== undefined ? profile.is_active : true
+
+  // Validação de sobreposição de datas para o mesmo usuário e tipo
+  const fromYM = toYearMonth(validFromVal)
+  const untilYM = validUntilVal ? toYearMonth(validUntilVal) : null
+
+  if (fromYM && untilYM && fromYM > untilYM) {
+    throw new Error(
+      'A data inicial ("Válido a partir de") não pode ser posterior à data final ("Válido até").',
+    )
+  }
+
+  // Buscar perfis existentes ativos do mesmo utilizador e tipo
+  const { data: existingSameType } = await db
+    .from('commission_profiles')
+    .select('id, valid_from, valid_until, is_active')
+    .eq('user_id', profile.user_id)
+    .eq('type', profile.type)
+
+  const otherProfiles = (existingSameType || []).filter(
+    (p: any) => p.id !== profile.id && p.is_active !== false,
+  )
+
+  for (const existing of otherProfiles) {
+    const exFromYM = toYearMonth(existing.valid_from)
+    const exUntilYM = existing.valid_until ? toYearMonth(existing.valid_until) : null
+
+    // Verifica sobreposição de competências: [fromYM, untilYM] vs [exFromYM, exUntilYM]
+    // Duas faixas [A, B] e [C, D] se sobrepõem se max(A, C) <= min(B, D)
+    const startA = fromYM || '0000-00'
+    const endA = untilYM || '9999-99'
+    const startB = exFromYM || '0000-00'
+    const endB = exUntilYM || '9999-99'
+
+    if (startA <= endB && startB <= endA) {
+      throw new Error(
+        `Já existe uma regra ativa do tipo "${profile.type}" com vigência concorrente (${existing.valid_from || 'início'} até ${existing.valid_until || 'indeterminado'}). Encerre ou ajuste o período da regra anterior antes de cadastrar outro intervalo sobreposto.`,
+      )
+    }
+  }
+
   if (profile.id) {
     const { error } = await db
       .from('commission_profiles')
@@ -967,6 +1091,9 @@ export async function upsertCommissionProfile(
         default_percentage_year_2_plus: profile.default_percentage_year_2_plus,
         setup_fee_percentage:
           profile.setup_fee_percentage !== undefined ? profile.setup_fee_percentage : null,
+        valid_from: validFromVal,
+        valid_until: validUntilVal,
+        is_active: isActiveVal,
       })
       .eq('id', profile.id)
     if (error) throw error
@@ -979,19 +1106,47 @@ export async function upsertCommissionProfile(
         default_percentage_year_2_plus: profile.default_percentage_year_2_plus || 0,
         setup_fee_percentage:
           profile.setup_fee_percentage !== undefined ? profile.setup_fee_percentage : null,
+        valid_from: validFromVal,
+        valid_until: validUntilVal,
+        is_active: isActiveVal,
       },
     ])
     if (error) throw error
   }
 }
 
-export async function deleteCommissionProfile(id: string): Promise<void> {
-  const { error } = await db.from('commission_profiles').delete().eq('id', id)
+export async function endCommissionProfile(id: string, endDate?: string): Promise<void> {
+  const until = endDate || new Date().toISOString().split('T')[0]
+  const { error } = await db
+    .from('commission_profiles')
+    .update({
+      valid_until: until,
+      is_active: false,
+    })
+    .eq('id', id)
+
   if (error) throw error
 }
 
+export async function deleteCommissionProfile(id: string): Promise<void> {
+  const { error } = await db.from('commission_profiles').delete().eq('id', id)
+  if (error) {
+    // Tratar erro retornado pelo trigger do banco
+    if (error.message?.includes('PROFILE_IN_USE')) {
+      throw new Error(
+        'Esta regra de comissão já foi utilizada em cálculos financeiros de competências anteriores e não pode ser excluída fisicamente. Utilize a opção "Encerrar Regra" para inativá-la e manter o histórico intacto.',
+      )
+    }
+    throw error
+  }
+}
+
 export async function getCommissionProfilesByUserId(userId: string): Promise<CommissionProfile[]> {
-  const { data, error } = await db.from('commission_profiles').select('*').eq('user_id', userId)
+  const { data, error } = await db
+    .from('commission_profiles')
+    .select('*')
+    .eq('user_id', userId)
+    .order('valid_from', { ascending: false })
 
   if (error) throw error
   return (data as unknown as CommissionProfile[]) || []

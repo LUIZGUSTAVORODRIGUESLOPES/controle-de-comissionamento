@@ -7,7 +7,10 @@ import {
   addUserToCustomer,
   removeUserFromCustomer,
   bulkUpdateCustomers,
+  getAllCommissionProfiles,
+  findActiveCommissionProfile,
 } from '@/services/commissionService'
+import type { CommissionProfile } from '@/types/database'
 import type { Customer, CustomerOrigin, AppUser } from '@/types/database'
 import { useToast } from '@/hooks/use-toast'
 import {
@@ -115,6 +118,7 @@ export default function Customers() {
 
   // Users linking state
   const [eligibleUsers, setEligibleUsers] = useState<AppUser[]>([])
+  const [commissionProfiles, setCommissionProfiles] = useState<CommissionProfile[]>([])
   const [selectedUserIdToAdd, setSelectedUserIdToAdd] = useState<string>('')
   const [selectedRuleToAdd, setSelectedRuleToAdd] = useState<string>('inbound')
   const [selectedValidFromToAdd, setSelectedValidFromToAdd] = useState<string>(
@@ -144,13 +148,17 @@ export default function Customers() {
     }
   }
 
-  // Load Eligible Users for Linking (Manager & Sales - role != 'admin')
+  // Load Eligible Users for Linking (Manager & Sales - role != 'admin') and commission profiles
   const loadEligibleUsers = async () => {
     try {
-      const users = await listEligibleCommissionUsers()
+      const [users, profs] = await Promise.all([
+        listEligibleCommissionUsers(),
+        getAllCommissionProfiles(),
+      ])
       setEligibleUsers(users.filter((u) => u.role !== 'admin'))
+      setCommissionProfiles(profs)
     } catch (err) {
-      console.error('Erro ao carregar usuários elegíveis:', err)
+      console.error('Erro ao carregar usuários elegíveis ou perfis:', err)
     }
   }
 
@@ -1065,12 +1073,37 @@ export default function Customers() {
                         </div>
 
                         <div className="flex items-center gap-2">
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] uppercase font-semibold text-teal-800 bg-teal-50 border-teal-200"
-                          >
-                            {link.commission_type || 'inbound'}
-                          </Badge>
+                          {(() => {
+                            const currentMonthStr = new Date().toISOString().split('T')[0]
+                            const currentProfile = findActiveCommissionProfile(
+                              commissionProfiles,
+                              link.user_id,
+                              link.commission_type || selectedCustomer?.origin || 'inbound',
+                              currentMonthStr,
+                            )
+                            return (
+                              <>
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] uppercase font-semibold text-teal-800 bg-teal-50 border-teal-200"
+                                >
+                                  {link.commission_type || 'inbound'}
+                                </Badge>
+                                {currentProfile && (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 border-emerald-200"
+                                    title="Regra vigente do vendedor no mês corrente"
+                                  >
+                                    Vigente: {currentProfile.default_percentage_year_1}%
+                                    {currentProfile.setup_fee_percentage != null
+                                      ? ` (+Setup ${currentProfile.setup_fee_percentage}%)`
+                                      : ''}
+                                  </Badge>
+                                )}
+                              </>
+                            )
+                          })()}
                           <Badge
                             variant="outline"
                             className="text-[10px] uppercase font-semibold text-slate-600 bg-white"

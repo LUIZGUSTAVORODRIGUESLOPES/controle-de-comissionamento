@@ -32,6 +32,9 @@ export interface CommissionProfile {
   default_percentage_year_1: number
   default_percentage_year_2_plus: number
   setup_fee_percentage?: number | null
+  valid_from?: string
+  valid_until?: string | null
+  is_active?: boolean
   created_at?: string
   user?: AppUser
 }

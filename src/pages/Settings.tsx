@@ -6,6 +6,7 @@ import {
   deleteUser,
   getAllCommissionProfiles,
   upsertCommissionProfile,
+  endCommissionProfile,
   deleteCommissionProfile,
   getAllTaxDeductions,
   upsertTaxDeduction,
@@ -44,7 +45,15 @@ import {
   UploadCloud,
   Mail,
   Loader2,
+  Calendar as CalendarIcon,
+  Clock,
+  Ban,
+  CheckCircle,
 } from 'lucide-react'
+import { Calendar } from '@/components/ui/calendar'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { format, parseISO } from 'date-fns'
+import { ptBR } from 'date-fns/locale'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Card,
@@ -120,8 +129,14 @@ export default function Settings() {
   const [profileYear1, setProfileYear1] = useState('3.0')
   const [profileYear2, setProfileYear2] = useState('3.0')
   const [profileSetupFee, setProfileSetupFee] = useState('')
+  const [profileValidFrom, setProfileValidFrom] = useState('')
+  const [profileValidUntil, setProfileValidUntil] = useState('')
+  const [profileIsActive, setProfileIsActive] = useState(true)
   const [deleteProfileDialogOpen, setDeleteProfileDialogOpen] = useState(false)
   const [profileToDelete, setProfileToDelete] = useState<CommissionProfile | null>(null)
+  const [profileToEnd, setProfileToEnd] = useState<CommissionProfile | null>(null)
+  const [endProfileDialogOpen, setEndProfileDialogOpen] = useState(false)
+  const [endingProfile, setEndingProfile] = useState(false)
   const [savingProfile, setSavingProfile] = useState(false)
 
   // Taxes Modals & State
@@ -291,6 +306,7 @@ export default function Settings() {
   const handleOpenProfileModal = (p?: CommissionProfile) => {
     // Filtrar apenas utilizadores comissionáveis (excluindo role = 'admin')
     const commissionableUsers = users.filter((u) => u.role !== 'admin')
+    const todayStr = new Date().toISOString().split('T')[0]
 
     if (p) {
       setEditingProfile(p)
@@ -303,6 +319,9 @@ export default function Settings() {
           ? String(p.setup_fee_percentage)
           : '',
       )
+      setProfileValidFrom(p.valid_from || todayStr)
+      setProfileValidUntil(p.valid_until || '')
+      setProfileIsActive(p.is_active !== undefined ? p.is_active : true)
     } else {
       setEditingProfile(null)
       setProfileUserId(commissionableUsers[0]?.id || '')
@@ -310,6 +329,9 @@ export default function Settings() {
       setProfileYear1('3.0')
       setProfileYear2('3.0')
       setProfileSetupFee('')
+      setProfileValidFrom(todayStr)
+      setProfileValidUntil('')
+      setProfileIsActive(true)
     }
     setProfileModalOpen(true)
   }
@@ -320,6 +342,15 @@ export default function Settings() {
       toast({
         title: 'Selecione um utilizador',
         description: 'Todo perfil de comissão deve estar associado a um utilizador.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (!profileValidFrom) {
+      toast({
+        title: 'Data de início obrigatória',
+        description: 'Informe o campo "Válido a partir de".',
         variant: 'destructive',
       })
       return
@@ -340,6 +371,9 @@ export default function Settings() {
         default_percentage_year_1: y1,
         default_percentage_year_2_plus: profileType === 'inbound' ? y1 : y2, // Inbound doesn't degrade
         setup_fee_percentage: setupFeeNum !== null && !isNaN(setupFeeNum) ? setupFeeNum : null,
+        valid_from: profileValidFrom,
+        valid_until: profileValidUntil.trim() ? profileValidUntil.trim() : null,
+        is_active: profileIsActive,
       })
 
       toast({
@@ -371,11 +405,38 @@ export default function Settings() {
       setDeleteProfileDialogOpen(false)
       await loadData()
     } catch (err: any) {
+      const msg = err.message || 'Erro ao excluir perfil'
+      setDeleteProfileDialogOpen(false)
       toast({
-        title: 'Erro ao excluir perfil',
+        title: 'Não é possível excluir esta regra',
+        description: msg,
+        variant: 'destructive',
+        duration: 7000,
+      })
+    }
+  }
+
+  const handleEndProfile = async () => {
+    if (!profileToEnd) return
+    setEndingProfile(true)
+    try {
+      const todayStr = new Date().toISOString().split('T')[0]
+      await endCommissionProfile(profileToEnd.id, todayStr)
+      toast({
+        title: 'Regra Encerrada',
+        description: `A vigência foi definida até hoje (${todayStr}) e a regra foi inativada. O histórico financeiro permanece preservado.`,
+      })
+      setEndProfileDialogOpen(false)
+      setProfileToEnd(null)
+      await loadData()
+    } catch (err: any) {
+      toast({
+        title: 'Erro ao encerrar regra',
         description: err.message,
         variant: 'destructive',
       })
+    } finally {
+      setEndingProfile(false)
     }
   }
 
@@ -880,24 +941,42 @@ export default function Settings() {
                   <thead>
                     <tr className="border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50/50">
                       <th className="py-3 px-4">Colaborador</th>
-                      <th className="py-3 px-4">Origem do Cliente</th>
-                      <th className="py-3 px-4 text-center">Alíquota 1º Ano (&le; 12 meses)</th>
-                      <th className="py-3 px-4 text-center">Alíquota 2º Ano+ (&gt; 12 meses)</th>
-                      <th className="py-3 px-4 text-center">Prêmio Implantação (1º Mês)</th>
+                      <th className="py-3 px-4">Origem / Regra</th>
+                      <th className="py-3 px-4 text-center">Vigência</th>
+                      <th className="py-3 px-4 text-center">Status</th>
+                      <th className="py-3 px-4 text-center">Alíquota 1º Ano</th>
+                      <th className="py-3 px-4 text-center">Alíquota 2º Ano+</th>
+                      <th className="py-3 px-4 text-center">Setup Fee</th>
                       <th className="py-3 px-4 text-right">Ações</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {profiles.map((p) => {
                       const u = users.find((x) => x.id === p.user_id) || p.user
+                      const isRuleActive = p.is_active !== false
+                      const fromLabel = p.valid_from
+                        ? p.valid_from.split('-').reverse().join('/')
+                        : 'Início'
+                      const untilLabel = p.valid_until
+                        ? p.valid_until.split('-').reverse().join('/')
+                        : 'Atual'
+
                       return (
-                        <tr key={p.id} className="hover:bg-slate-50 transition-colors">
+                        <tr
+                          key={p.id}
+                          className={`hover:bg-slate-50 transition-colors ${
+                            !isRuleActive ? 'bg-slate-50/60 opacity-80' : ''
+                          }`}
+                        >
                           <td className="py-3 px-4 font-bold text-slate-800">
-                            {u?.name || 'Utilizador'}
+                            <div>{u?.name || 'Utilizador'}</div>
+                            <span className="text-[11px] font-normal text-slate-400">
+                              {u?.role === 'manager' ? 'Gerente' : 'Vendedor'}
+                            </span>
                           </td>
                           <td className="py-3 px-4 capitalize">
                             <span
-                              className={`text-xs px-2.5 py-1 rounded font-semibold ${
+                              className={`text-xs px-2.5 py-1 rounded font-semibold inline-flex items-center gap-1 ${
                                 p.type === 'inbound'
                                   ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
                                   : 'bg-indigo-50 text-indigo-800 border border-indigo-200'
@@ -905,6 +984,28 @@ export default function Settings() {
                             >
                               {p.type} {p.type === 'inbound' ? '(Vitalício)' : '(Degressivo)'}
                             </span>
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <Badge
+                              variant="outline"
+                              className="font-mono text-[11px] text-slate-700 bg-slate-50 border-slate-200 gap-1"
+                            >
+                              <Clock className="h-3 w-3 text-slate-400" />
+                              <span>{fromLabel}</span>
+                              <span className="text-slate-400">&rarr;</span>
+                              <span>{untilLabel}</span>
+                            </Badge>
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            {isRuleActive ? (
+                              <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 border-transparent text-[10px] font-semibold">
+                                Ativa
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-slate-200 text-slate-600 hover:bg-slate-200 border-transparent text-[10px] font-semibold">
+                                Encerrada
+                              </Badge>
+                            )}
                           </td>
                           <td className="py-3 px-4 text-center font-bold text-teal-800 tabular-nums">
                             {p.default_percentage_year_1}%
@@ -925,26 +1026,47 @@ export default function Settings() {
                               <span className="text-slate-400 font-normal text-xs">-</span>
                             )}
                           </td>
-                          <td className="py-3 px-4 text-right space-x-2">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleOpenProfileModal(p)}
-                              className="h-8 w-8 p-0 text-slate-600 hover:text-teal-700 hover:bg-teal-50"
-                            >
-                              <Edit2 className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => {
-                                setProfileToDelete(p)
-                                setDeleteProfileDialogOpen(true)
-                              }}
-                              className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                          <td className="py-3 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleOpenProfileModal(p)}
+                                title="Editar Regra"
+                                className="h-8 w-8 p-0 text-slate-600 hover:text-teal-700 hover:bg-teal-50"
+                              >
+                                <Edit2 className="h-3.5 w-3.5" />
+                              </Button>
+
+                              {isRuleActive && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    setProfileToEnd(p)
+                                    setEndProfileDialogOpen(true)
+                                  }}
+                                  title="Encerrar Regra (Define data final como hoje e inativa sem apagar histórico)"
+                                  className="h-8 px-2 text-xs font-semibold text-amber-700 hover:text-amber-800 hover:bg-amber-50 gap-1"
+                                >
+                                  <Ban className="h-3.5 w-3.5" />
+                                  <span className="hidden sm:inline">Encerrar</span>
+                                </Button>
+                              )}
+
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  setProfileToDelete(p)
+                                  setDeleteProfileDialogOpen(true)
+                                }}
+                                title="Excluir Definitivamente (Permitido apenas se não houver histórico de comissão)"
+                                className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       )
@@ -1214,6 +1336,131 @@ export default function Settings() {
                 </p>
               </div>
 
+              {/* BLOCO DE VIGÊNCIA TEMPORAL */}
+              <div className="p-3.5 rounded-lg border border-teal-200 bg-teal-50/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-bold text-teal-950 uppercase flex items-center gap-1.5">
+                    <CalendarIcon className="h-3.5 w-3.5 text-[#0F766E]" />
+                    <span>Período de Vigência da Regra</span>
+                  </Label>
+                  <span className="text-[10px] text-teal-700 font-medium">Mês/Ano Competência</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label className="text-[11px] font-semibold text-slate-700 flex items-center gap-1">
+                      <span>Válido a partir de:</span>
+                      <span className="text-rose-500">*</span>
+                    </Label>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="date"
+                        value={profileValidFrom}
+                        onChange={(e) => setProfileValidFrom(e.target.value)}
+                        required
+                        className="h-9 text-xs bg-white border-teal-300 focus-visible:ring-[#0F766E]"
+                      />
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            className="h-9 w-9 bg-white border-teal-300 shrink-0 text-slate-600 hover:text-[#0F766E]"
+                            title="Selecionar data inicial no calendário"
+                          >
+                            <CalendarIcon className="h-3.5 w-3.5" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={profileValidFrom ? parseISO(profileValidFrom) : undefined}
+                            onSelect={(d) => {
+                              if (d) {
+                                const y = d.getFullYear()
+                                const m = String(d.getMonth() + 1).padStart(2, '0')
+                                const day = String(d.getDate()).padStart(2, '0')
+                                setProfileValidFrom(`${y}-${m}-${day}`)
+                              }
+                            }}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-[11px] font-semibold text-slate-700 flex items-center justify-between">
+                      <span>Válido até:</span>
+                      <span className="text-[10px] text-slate-400 font-normal">Opcional</span>
+                    </Label>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="date"
+                        value={profileValidUntil}
+                        onChange={(e) => setProfileValidUntil(e.target.value)}
+                        placeholder="Indeterminado"
+                        className="h-9 text-xs bg-white border-teal-300 focus-visible:ring-[#0F766E]"
+                      />
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            className="h-9 w-9 bg-white border-teal-300 shrink-0 text-slate-600 hover:text-[#0F766E]"
+                            title="Selecionar data final no calendário"
+                          >
+                            <CalendarIcon className="h-3.5 w-3.5" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={profileValidUntil ? parseISO(profileValidUntil) : undefined}
+                            onSelect={(d) => {
+                              if (d) {
+                                const y = d.getFullYear()
+                                const m = String(d.getMonth() + 1).padStart(2, '0')
+                                const day = String(d.getDate()).padStart(2, '0')
+                                setProfileValidUntil(`${y}-${m}-${day}`)
+                              }
+                            }}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1 border-t border-teal-100">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      id="p-is-active"
+                      checked={profileIsActive}
+                      onCheckedChange={setProfileIsActive}
+                    />
+                    <Label htmlFor="p-is-active" className="text-xs text-slate-700 cursor-pointer">
+                      Regra ativa para novos cálculos
+                    </Label>
+                  </div>
+                  {profileValidUntil && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setProfileValidUntil('')}
+                      className="text-[10px] text-slate-500 h-6 px-2 hover:text-slate-800"
+                    >
+                      Limpar término (tornar vitalícia)
+                    </Button>
+                  )}
+                </div>
+              </div>
+
               {profileType === 'inbound' ? (
                 <div className="p-3 bg-teal-50 border border-teal-200 text-teal-800 rounded-lg text-xs flex items-start gap-2">
                   <Info className="h-4 w-4 shrink-0 mt-0.5" />
@@ -1253,10 +1500,18 @@ export default function Settings() {
       <AlertDialog open={deleteProfileDialogOpen} onOpenChange={setDeleteProfileDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Excluir esta regra de comissão?</AlertDialogTitle>
-            <AlertDialogDescription>
-              A exclusão fará com que este vendedor não receba alíquota correspondente a esta origem
-              de clientes.
+            <AlertDialogTitle>Excluir regra de comissão?</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <p>
+                Atenção: A exclusão física só é permitida se esta regra{' '}
+                <strong>nunca tiver sido utilizada</strong> em nenhum fechamento financeiro
+                anterior.
+              </p>
+              <p className="text-xs text-slate-500">
+                Se este perfil já possuir histórico financeiro associado, a exclusão será bloqueada
+                para compliance contábil. Nesse caso, utilize o botão <strong>"Encerrar"</strong>{' '}
+                para inativá-la preservando o histórico.
+              </p>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1265,7 +1520,41 @@ export default function Settings() {
               onClick={handleDeleteProfile}
               className="bg-rose-600 hover:bg-rose-700 text-white"
             >
-              Sim, excluir
+              Tentar excluir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* CONFIRM END PROFILE (ENCERRAR REGRA) */}
+      <AlertDialog open={endProfileDialogOpen} onOpenChange={setEndProfileDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-slate-900">
+              <Ban className="h-5 w-5 text-amber-600" />
+              <span>Encerrar Regra de Comissão?</span>
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2 text-xs text-slate-600">
+              <p>
+                Esta ação definirá o término da vigência deste perfil como{' '}
+                <strong>hoje ({new Date().toLocaleDateString('pt-BR')})</strong> e marcará a regra
+                como inativa.
+              </p>
+              <p className="p-2.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs">
+                <strong>Garantia de Compliance:</strong> Todos os relatórios, extratos e comissões
+                calculadas no passado permanecerão intactos. Cálculos futuros passarão a considerar
+                apenas a nova regra vigente.
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={endingProfile}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleEndProfile}
+              disabled={endingProfile}
+              className="bg-amber-600 hover:bg-amber-700 text-white font-semibold"
+            >
+              {endingProfile ? 'Encerrando...' : 'Sim, Encerrar Regra'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

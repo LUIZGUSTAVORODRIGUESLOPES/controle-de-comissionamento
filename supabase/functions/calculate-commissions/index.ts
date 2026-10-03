@@ -41,8 +41,8 @@ function getMonthDifference(startDateStr: string | null | undefined, runMonthStr
   return Math.max(0, totalMonths)
 }
 
-// Check if run month falls within link validity period [valid_from, valid_until]
-function isLinkValidForMonth(
+// Check if run month falls within validity period [valid_from, valid_until] (scope: YYYY-MM)
+function isPeriodValidForMonth(
   validFromStr: string | null | undefined,
   validUntilStr: string | null | undefined,
   runMonthStr: string,
@@ -69,6 +69,64 @@ function isLinkValidForMonth(
   return true
 }
 
+// Alias for link validity check
+function isLinkValidForMonth(
+  validFromStr: string | null | undefined,
+  validUntilStr: string | null | undefined,
+  runMonthStr: string,
+): boolean {
+  return isPeriodValidForMonth(validFromStr, validUntilStr, runMonthStr)
+}
+
+// Find best matching commission profile for user, type and competence month
+function findActiveCommissionProfile(
+  profiles: any[],
+  userId: string,
+  ruleType: string,
+  runMonthStr: string,
+): any | null {
+  // Filter active profiles for this user and type where runMonth is within [valid_from, valid_until]
+  const matching = (profiles || []).filter((p) => {
+    if (p.user_id !== userId) return false
+    if ((p.type || '').toLowerCase() !== ruleType.toLowerCase()) return false
+    if (p.is_active === false) return false
+    return isPeriodValidForMonth(p.valid_from, p.valid_until, runMonthStr)
+  })
+
+  if (matching.length > 0) {
+    // Sort descending by valid_from (most recent first), then created_at descending
+    matching.sort((a, b) => {
+      const aFrom = a.valid_from ? new Date(a.valid_from).getTime() : 0
+      const bFrom = b.valid_from ? new Date(b.valid_from).getTime() : 0
+      if (bFrom !== aFrom) return bFrom - aFrom
+      const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0
+      const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0
+      return bCreated - aCreated
+    })
+    return matching[0]
+  }
+
+  // Fallback: any active profile of this user matching validity
+  const fallback = (profiles || []).filter((p) => {
+    if (p.user_id !== userId) return false
+    if (p.is_active === false) return false
+    return isPeriodValidForMonth(p.valid_from, p.valid_until, runMonthStr)
+  })
+
+  if (fallback.length > 0) {
+    fallback.sort((a, b) => {
+      const aFrom = a.valid_from ? new Date(a.valid_from).getTime() : 0
+      const bFrom = b.valid_from ? new Date(b.valid_from).getTime() : 0
+      if (bFrom !== aFrom) return bFrom - aFrom
+      const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0
+      const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0
+      return bCreated - aCreated
+    })
+    return fallback[0]
+  }
+
+  return null
+}
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -288,13 +346,13 @@ Deno.serve(async (req: Request) => {
         // Read commission_type directly from the link (customer_users), fallback to customer.origin or 'inbound'
         const linkRule = (link.commission_type || customer?.origin || 'inbound').toLowerCase()
 
-        // Find profile for this user matching rule
-        const userProfile = (profiles || []).find(
-          (p) => p.user_id === link.user_id && p.type === linkRule,
+        // Find profile for this user matching rule with temporal validity & descending valid_from
+        const activeProfile = findActiveCommissionProfile(
+          profiles || [],
+          link.user_id,
+          linkRule,
+          run.month_year,
         )
-
-        const fallbackProfile = (profiles || []).find((p) => p.user_id === link.user_id)
-        const activeProfile = userProfile || fallbackProfile
 
         let percentageToApply = 0
 
