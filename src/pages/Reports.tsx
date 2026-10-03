@@ -145,7 +145,7 @@ export default function Reports() {
   const [periodEndDate, setPeriodEndDate] = useState<string>('2026-12-31')
 
   // Seller Filter: 'all' or userId (legacy single filter, synced with multi-select)
-  const [selectedSellerId, setSelectedSellerId] = useState<string>('all')
+  const [selectedSellerId] = useState<string>('all')
 
   // Data loaded for the active view
   const [billings, setBillings] = useState<Billing[]>([])
@@ -179,7 +179,7 @@ export default function Reports() {
   // If user is sales, lock filter to themselves automatically
   useEffect(() => {
     if (isSales && appUser?.id) {
-      setSelectedSellerId(appUser.id)
+      setSelectedUserIds([appUser.id])
     }
   }, [isSales, appUser?.id])
 
@@ -603,15 +603,17 @@ export default function Reports() {
       const filteredRunBills = isSellerFiltered
         ? runBillings.filter((b) => {
             const hasComm = runCommissions.some(
-              (c) => c.billing_id === b.id && c.user_id === selectedSellerId,
+              (c) => c.billing_id === b.id && activeSelectedUserIds.includes(c.user_id),
             )
             if (hasComm) return true
-            return b.customer?.customer_users?.some((cu) => cu.user_id === selectedSellerId)
+            return b.customer?.customer_users?.some((cu) =>
+              activeSelectedUserIds.includes(cu.user_id),
+            )
           })
         : runBillings
 
       const filteredRunComms = isSellerFiltered
-        ? runCommissions.filter((c) => c.user_id === selectedSellerId)
+        ? runCommissions.filter((c) => activeSelectedUserIds.includes(c.user_id))
         : runCommissions
 
       const gross = filteredRunBills.reduce((acc, b) => acc + Number(b.gross_amount), 0)
@@ -627,7 +629,7 @@ export default function Reports() {
         billingsCount: filteredRunBills.length,
       }
     })
-  }, [viewMode, activeRunsInPeriod, billings, commissions, isSellerFiltered, selectedSellerId])
+  }, [viewMode, activeRunsInPeriod, billings, commissions, isSellerFiltered, activeSelectedUserIds])
 
   // Group user commissions by month for the detailed payslip in Period mode
   const groupCommissionsByMonth = (commList: Commission[]) => {
