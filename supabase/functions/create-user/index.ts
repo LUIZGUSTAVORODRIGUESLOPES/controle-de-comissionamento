@@ -2,12 +2,22 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { corsHeaders } from '../_shared/cors.ts'
 
-interface CreateUserPayload {
-  email: string
+interface RequestPayload {
+  action?: 'create' | 'reset-password'
+  // Create payload
+  email?: string
   password?: string
-  name: string
-  role: 'admin' | 'manager' | 'sales'
+  name?: string
+  role?: 'admin' | 'manager' | 'sales'
   fixed_salary?: number
+  auto_send_report_to_self?: boolean
+  cc_hr?: boolean
+  cc_finance?: boolean
+  must_change_password?: boolean
+
+  // Reset password payload
+  user_id?: string
+  new_password?: string
 }
 
 Deno.serve(async (req: Request) => {
@@ -54,7 +64,7 @@ Deno.serve(async (req: Request) => {
       })
     }
 
-    // Client administrativo com service_role para checar privilégios e criar usuário
+    // Client administrativo com service_role para checar privilégios e executar ações de admin
     const adminClient = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     })
@@ -68,15 +78,92 @@ Deno.serve(async (req: Request) => {
     if (profileErr || !callerProfile || callerProfile.role !== 'admin') {
       return new Response(
         JSON.stringify({
-          error: 'Acesso negado. Apenas Administradores podem cadastrar utilizadores.',
+          error: 'Acesso negado. Apenas Administradores podem gerenciar senhas e utilizadores.',
         }),
         { status: 403, headers: { 'Content-Type': 'application/json', ...corsHeaders } },
       )
     }
 
     // 2. Extrair dados da requisição
-    const body: CreateUserPayload = await req.json()
-    const { email, password, name, role, fixed_salary } = body
+    const body: RequestPayload = await req.json()
+    const action = body.action || (body.user_id && body.new_password ? 'reset-password' : 'create')
+
+    // ==========================================
+    // AÇÃO 1: RESET DE SENHA POR ADMINISTRADOR
+    // ==========================================
+    if (action === 'reset-password') {
+      const { user_id, new_password, must_change_password } = body
+
+      if (!user_id || !new_password) {
+        return new Response(
+          JSON.stringify({ error: 'Parâmetros obrigatórios ausentes: user_id e new_password.' }),
+          { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } },
+        )
+      }
+
+      if (new_password.length < 8) {
+        return new Response(
+          JSON.stringify({ error: 'A nova palavra-passe deve conter pelo menos 8 caracteres.' }),
+          { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } },
+        )
+      }
+
+      // Atualiza a senha no Supabase Auth usando a Admin API
+      const { data: updatedAuthUser, error: updateAuthErr } =
+        await adminClient.auth.admin.updateUserById(user_id, {
+          password: new_password,
+        })
+
+      if (updateAuthErr) {
+        return new Response(JSON.stringify({ error: updateAuthErr.message }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        })
+      }
+
+      // Por padrão, reset por admin também força o usuário a mudar a senha no próximo login (default true)
+      const flagMustChange = must_change_password !== undefined ? must_change_password : true
+
+      const { data: updatedProfile, error: profileUpdateErr } = await adminClient
+        .from('users')
+        .update({ must_change_password: flagMustChange })
+        .eq('id', user_id)
+        .select()
+        .single()
+
+      if (profileUpdateErr) {
+        console.warn(
+          'Aviso: falha ao atualizar flag must_change_password no perfil:',
+          profileUpdateErr,
+        )
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          user: updatedProfile || { id: updatedAuthUser.user.id },
+          must_change_password: flagMustChange,
+          message:
+            'Palavra-passe redefinida com sucesso. O utilizador deverá cadastrar uma nova senha no próximo acesso.',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } },
+      )
+    }
+
+    // ==========================================
+    // AÇÃO 2: CRIAÇÃO DE UTILIZADOR
+    // ==========================================
+    const {
+      email,
+      password,
+      name,
+      role,
+      fixed_salary,
+      auto_send_report_to_self,
+      cc_hr,
+      cc_finance,
+      must_change_password,
+    } = body
 
     if (!email || !name || !role) {
       return new Response(
@@ -88,11 +175,12 @@ Deno.serve(async (req: Request) => {
     const cleanEmail = email.trim().toLowerCase()
     const cleanName = name.trim()
     const cleanSalary = typeof fixed_salary === 'number' ? fixed_salary : 0
+    const forceChange = must_change_password !== undefined ? must_change_password : true
 
     let createdAuthUserId: string | null = null
 
     if (password && password.length >= 6) {
-      // Criação direta com senha definida pelo Admin
+      // Criação direta com senha definida (gerada automaticamente pelo admin)
       const { data: createdUser, error: createAuthError } = await adminClient.auth.admin.createUser(
         {
           email: cleanEmail,
@@ -127,7 +215,7 @@ Deno.serve(async (req: Request) => {
       createdAuthUserId = inviteData.user.id
     }
 
-    // 3. Inserir ou atualizar na tabela pública `users`
+    // Inserir ou atualizar na tabela pública `users` com a flag must_change_password
     const { data: profileData, error: insertProfileError } = await adminClient
       .from('users')
       .upsert({
@@ -136,6 +224,10 @@ Deno.serve(async (req: Request) => {
         email: cleanEmail,
         role: role,
         fixed_salary: cleanSalary,
+        auto_send_report_to_self: auto_send_report_to_self ?? true,
+        cc_hr: cc_hr ?? false,
+        cc_finance: cc_finance ?? false,
+        must_change_password: forceChange,
       })
       .select()
       .single()

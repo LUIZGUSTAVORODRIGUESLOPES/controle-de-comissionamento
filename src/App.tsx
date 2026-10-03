@@ -3,6 +3,7 @@ import { AuthProvider } from '@/hooks/use-auth'
 import { ProtectedRoute } from '@/components/ProtectedRoute'
 import Layout from '@/components/Layout'
 import Login from '@/pages/Login'
+import ChangePassword from '@/pages/ChangePassword'
 import Dashboard from '@/pages/Dashboard'
 import Upload from '@/pages/Upload'
 import Pendencies from '@/pages/Pendencies'
@@ -24,6 +25,16 @@ export default function App() {
           <Routes>
             {/* Public Login Route */}
             <Route path="/login" element={<Login />} />
+
+            {/* Mandatory Change Password Route (intercepted by ProtectedRoute) */}
+            <Route
+              path="/change-password"
+              element={
+                <ProtectedRoute>
+                  <ChangePassword />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Protected Routes inside Global Layout */}
             <Route

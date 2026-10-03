@@ -12,6 +12,7 @@ export interface AppUser {
   auto_send_report_to_self?: boolean
   cc_hr?: boolean
   cc_finance?: boolean
+  must_change_password?: boolean | null
   created_at?: string
 }
 

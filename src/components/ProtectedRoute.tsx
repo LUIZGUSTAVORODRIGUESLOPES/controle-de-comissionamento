@@ -27,6 +27,17 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 
+  // Se o usuário precisa obrigatoriamente trocar de senha:
+  // Intercepta e força a navegação para /change-password
+  if (appUser?.must_change_password) {
+    if (location.pathname !== '/change-password') {
+      return <Navigate to="/change-password" replace />
+    }
+  } else if (location.pathname === '/change-password') {
+    // Se o usuário já não precisa trocar senha e tenta acessar /change-password, leva ao dashboard
+    return <Navigate to="/dashboard" replace />
+  }
+
   // If user is logged in but role doesn't permit this route, redirect to /dashboard
   if (allowedRoles && appUser && !allowedRoles.includes(appUser.role)) {
     return <Navigate to="/dashboard" replace />

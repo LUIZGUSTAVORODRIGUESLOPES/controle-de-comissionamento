@@ -63,6 +63,8 @@ export default function Login() {
         // "E-mail ou palavra-passe inválidos"
         setErrorMessage('E-mail ou palavra-passe inválidos')
       } else {
+        // Se o usuário precisa obrigatoriamente trocar de senha, direciona para /change-password
+        // Caso contrário, segue para o destino original
         navigate(from, { replace: true })
       }
     } catch {
