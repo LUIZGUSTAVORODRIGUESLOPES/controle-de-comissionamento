@@ -220,6 +220,20 @@ export async function addUserToCustomer(
   validFrom?: string,
   validUntil?: string | null,
 ): Promise<void> {
+  // Regra de Negócio: Administradores não podem ser vinculados a carteiras comerciais
+  const { data: targetUser } = await db
+    .from('users')
+    .select('id, role')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (targetUser && (targetUser as any).role === 'admin') {
+    console.warn(
+      `[addUserToCustomer] Usuário ${userId} possui role 'admin' e não pode ser vinculado a clientes. Operação ignorada.`,
+    )
+    return
+  }
+
   // Check if link already exists
   const { data: existing } = await db
     .from('customer_users')
@@ -324,13 +338,24 @@ export async function updateCustomerDetails(
   await db.from('customer_users').delete().eq('customer_id', customerId)
 
   if (userIds.length > 0) {
-    const rows = userIds.map((uid) => ({
-      customer_id: customerId,
-      user_id: uid,
-      commission_type: origin || 'inbound',
-    }))
-    const { error: linkError } = await db.from('customer_users').insert(rows)
-    if (linkError) throw linkError
+    // Filtrar para garantir que nenhum admin seja vinculado
+    const { data: validUsers } = await db.from('users').select('id, role').in('id', userIds)
+
+    const nonAdminUserIds = new Set(
+      (validUsers || []).filter((u: any) => u.role !== 'admin').map((u: any) => u.id),
+    )
+
+    const rows = userIds
+      .filter((uid) => nonAdminUserIds.has(uid))
+      .map((uid) => ({
+        customer_id: customerId,
+        user_id: uid,
+        commission_type: origin || 'inbound',
+      }))
+    if (rows.length > 0) {
+      const { error: linkError } = await db.from('customer_users').insert(rows)
+      if (linkError) throw linkError
+    }
   }
 }
 
@@ -406,6 +431,22 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
   const defaultBatchValidUntil = params.validUntil ?? null
 
   if (targetUserRules !== undefined) {
+    // Validação preventiva: filtrar targetUserRules para rejeitar qualquer usuário com role 'admin'
+    let sanitizedRules = targetUserRules
+    if (targetUserRules.length > 0) {
+      const candidateUserIds = Array.from(new Set(targetUserRules.map((t) => t.user_id)))
+      const { data: candidateUsers } = await db
+        .from('users')
+        .select('id, role')
+        .in('id', candidateUserIds)
+
+      const nonAdminIdSet = new Set(
+        (candidateUsers || []).filter((u: any) => u.role !== 'admin').map((u: any) => u.id),
+      )
+
+      sanitizedRules = targetUserRules.filter((t) => nonAdminIdSet.has(t.user_id))
+    }
+
     if (replaceUsers) {
       // Modo substituição: deletar vínculos antigos dos clientes selecionados
       const { error: delError } = await db
@@ -416,7 +457,7 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
       if (delError) throw delError
 
       // Inserir apenas os novos selecionados com a regra de cada usuário e vigência
-      if (targetUserRules.length > 0) {
+      if (sanitizedRules.length > 0) {
         const rowsToInsert: Array<{
           customer_id: string
           user_id: string
@@ -425,7 +466,7 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
           valid_until: string | null
         }> = []
         for (const custId of customerIds) {
-          for (const item of targetUserRules) {
+          for (const item of sanitizedRules) {
             rowsToInsert.push({
               customer_id: custId,
               user_id: item.user_id,
@@ -444,7 +485,7 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
       }
     } else {
       // Modo adição: apenas adicionar vínculos que ainda não existam para evitar violar customer_users_unique
-      if (targetUserRules.length > 0) {
+      if (sanitizedRules.length > 0) {
         // Buscar vínculos existentes dos clientes selecionados
         const { data: existingLinks, error: fetchErr } = await db
           .from('customer_users')
@@ -465,7 +506,7 @@ export async function bulkUpdateCustomers(params: BulkUpdateCustomersParams): Pr
           valid_until: string | null
         }> = []
         for (const custId of customerIds) {
-          for (const item of targetUserRules) {
+          for (const item of sanitizedRules) {
             const key = `${custId}_${item.user_id}`
             const existing = existingMap.get(key)
             const itemValidFrom = item.valid_from || defaultBatchValidFrom
@@ -873,6 +914,17 @@ export async function updateUser(
   const { data, error } = await db.from('users').update(updates).eq('id', id).select().single()
 
   if (error) throw error
+
+  // Se o usuário foi alterado para role = 'admin', remover vínculos comerciais e perfis de comissão existentes
+  if (updates.role === 'admin') {
+    try {
+      await db.from('commission_profiles').delete().eq('user_id', id)
+      await db.from('customer_users').delete().eq('user_id', id)
+    } catch (cleanupErr) {
+      console.warn('Erro ao limpar perfis e vínculos ao promover usuário a admin:', cleanupErr)
+    }
+  }
+
   return data as unknown as AppUser
 }
 
@@ -894,6 +946,17 @@ export async function getAllCommissionProfiles(): Promise<CommissionProfile[]> {
 export async function upsertCommissionProfile(
   profile: Partial<CommissionProfile> & { user_id: string; type: 'inbound' | 'outbound' },
 ): Promise<void> {
+  // Regra de Negócio: Administradores não podem possuir perfil de comissão
+  const { data: targetUser } = await db
+    .from('users')
+    .select('id, role')
+    .eq('id', profile.user_id)
+    .maybeSingle()
+
+  if (targetUser && (targetUser as any).role === 'admin') {
+    throw new Error('Utilizadores com perfil Administrador não podem possuir regras de comissão.')
+  }
+
   if (profile.id) {
     const { error } = await db
       .from('commission_profiles')
@@ -924,6 +987,18 @@ export async function upsertCommissionProfile(
 
 export async function deleteCommissionProfile(id: string): Promise<void> {
   const { error } = await db.from('commission_profiles').delete().eq('id', id)
+  if (error) throw error
+}
+
+export async function getCommissionProfilesByUserId(userId: string): Promise<CommissionProfile[]> {
+  const { data, error } = await db.from('commission_profiles').select('*').eq('user_id', userId)
+
+  if (error) throw error
+  return (data as unknown as CommissionProfile[]) || []
+}
+
+export async function deleteCommissionProfilesByUserId(userId: string): Promise<void> {
+  const { error } = await db.from('commission_profiles').delete().eq('user_id', userId)
   if (error) throw error
 }
 

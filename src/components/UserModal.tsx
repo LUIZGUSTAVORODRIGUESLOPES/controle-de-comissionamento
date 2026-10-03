@@ -44,7 +44,12 @@ import {
 } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
 import type { AppUser } from '@/types/database'
-import { updateUser } from '@/services/commissionService'
+import {
+  updateUser,
+  getCommissionProfilesByUserId,
+  upsertCommissionProfile,
+} from '@/services/commissionService'
+import { Percent, Info } from 'lucide-react'
 
 interface UserModalProps {
   open: boolean
@@ -108,6 +113,28 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
     mode: 'onChange',
   })
 
+  // Observar a role em tempo real para controle dinâmico da UI
+  const createRole = createForm.watch('role')
+  const editRole = editForm.watch('role')
+
+  // Estados dos Perfis de Comissão (Inbound, Outbound, Taxa de Implantação)
+  // Criação:
+  const [createInboundRate, setCreateInboundRate] = useState('3.0')
+  const [createInboundSetup, setCreateInboundSetup] = useState('')
+  const [createOutboundY1, setCreateOutboundY1] = useState('5.0')
+  const [createOutboundY2, setCreateOutboundY2] = useState('2.5')
+  const [createOutboundSetup, setCreateOutboundSetup] = useState('10.0')
+
+  // Edição:
+  const [editInboundId, setEditInboundId] = useState<string | null>(null)
+  const [editInboundRate, setEditInboundRate] = useState('3.0')
+  const [editInboundSetup, setEditInboundSetup] = useState('')
+  const [editOutboundId, setEditOutboundId] = useState<string | null>(null)
+  const [editOutboundY1, setEditOutboundY1] = useState('5.0')
+  const [editOutboundY2, setEditOutboundY2] = useState('2.5')
+  const [editOutboundSetup, setEditOutboundSetup] = useState('')
+  const [loadingProfiles, setLoadingProfiles] = useState(false)
+
   const watchedResetPassword = resetForm.watch('newPassword')
 
   // Gera uma nova senha segura para o formulário de criação
@@ -157,6 +184,52 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
           newPassword: '',
           confirmPassword: '',
         })
+
+        // Carregar perfis de comissão existentes se for sales ou manager
+        if (editingUser.role !== 'admin') {
+          setLoadingProfiles(true)
+          getCommissionProfilesByUserId(editingUser.id)
+            .then((profiles) => {
+              const inProf = profiles.find((p) => p.type === 'inbound')
+              const outProf = profiles.find((p) => p.type === 'outbound')
+
+              if (inProf) {
+                setEditInboundId(inProf.id)
+                setEditInboundRate(String(inProf.default_percentage_year_1))
+                setEditInboundSetup(
+                  inProf.setup_fee_percentage !== null && inProf.setup_fee_percentage !== undefined
+                    ? String(inProf.setup_fee_percentage)
+                    : '',
+                )
+              } else {
+                setEditInboundId(null)
+                setEditInboundRate('3.0')
+                setEditInboundSetup('')
+              }
+
+              if (outProf) {
+                setEditOutboundId(outProf.id)
+                setEditOutboundY1(String(outProf.default_percentage_year_1))
+                setEditOutboundY2(String(outProf.default_percentage_year_2_plus))
+                setEditOutboundSetup(
+                  outProf.setup_fee_percentage !== null &&
+                    outProf.setup_fee_percentage !== undefined
+                    ? String(outProf.setup_fee_percentage)
+                    : '',
+                )
+              } else {
+                setEditOutboundId(null)
+                setEditOutboundY1('5.0')
+                setEditOutboundY2('2.5')
+                setEditOutboundSetup('')
+              }
+            })
+            .catch((err) => console.warn('Erro ao carregar perfis do usuário:', err))
+            .finally(() => setLoadingProfiles(false))
+        } else {
+          setEditInboundId(null)
+          setEditOutboundId(null)
+        }
       } else {
         const initialPass = generateStrongPassword(12)
         setGeneratedPassword(initialPass)
@@ -171,6 +244,12 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
           ccHr: false,
           ccFinance: false,
         })
+        // Reset commission profile inputs for creation
+        setCreateInboundRate('3.0')
+        setCreateInboundSetup('')
+        setCreateOutboundY1('5.0')
+        setCreateOutboundY2('2.5')
+        setCreateOutboundSetup('10.0')
       }
     }
   }, [open, editingUser, createForm, editForm, resetForm])
@@ -204,6 +283,38 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
           created = true
           creationNote =
             'Senha inicial gerada com sucesso. O utilizador será obrigado a alterá-la no primeiro acesso.'
+          // Se o usuário criado for não-admin, atualizar os perfis de comissão se fornecidos
+          if (data.role !== 'admin' && edgeData.user?.id) {
+            const newUserId = edgeData.user.id
+            try {
+              const inRate = parseFloat(createInboundRate.replace(',', '.')) || 3.0
+              const inSetup = createInboundSetup.trim()
+                ? parseFloat(createInboundSetup.replace(',', '.'))
+                : null
+              const outY1 = parseFloat(createOutboundY1.replace(',', '.')) || 5.0
+              const outY2 = parseFloat(createOutboundY2.replace(',', '.')) || 2.5
+              const outSetup = createOutboundSetup.trim()
+                ? parseFloat(createOutboundSetup.replace(',', '.'))
+                : null
+
+              await upsertCommissionProfile({
+                user_id: newUserId,
+                type: 'inbound',
+                default_percentage_year_1: inRate,
+                default_percentage_year_2_plus: inRate,
+                setup_fee_percentage: inSetup,
+              })
+              await upsertCommissionProfile({
+                user_id: newUserId,
+                type: 'outbound',
+                default_percentage_year_1: outY1,
+                default_percentage_year_2_plus: outY2,
+                setup_fee_percentage: outSetup,
+              })
+            } catch (profErr) {
+              console.warn('Erro ao salvar perfis customizados na criação:', profErr)
+            }
+          }
         } else if (edgeData?.error) {
           console.warn('Edge function create-user reportou:', edgeData.error)
         }
@@ -236,6 +347,38 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
           created = true
           creationNote =
             'Colaborador cadastrado no sistema. Troca de senha obrigatória no primeiro acesso.'
+
+          // Criação dos perfis de comissão no fallback
+          if (data.role !== 'admin') {
+            try {
+              const inRate = parseFloat(createInboundRate.replace(',', '.')) || 3.0
+              const inSetup = createInboundSetup.trim()
+                ? parseFloat(createInboundSetup.replace(',', '.'))
+                : null
+              const outY1 = parseFloat(createOutboundY1.replace(',', '.')) || 5.0
+              const outY2 = parseFloat(createOutboundY2.replace(',', '.')) || 2.5
+              const outSetup = createOutboundSetup.trim()
+                ? parseFloat(createOutboundSetup.replace(',', '.'))
+                : null
+
+              await upsertCommissionProfile({
+                user_id: authData.user.id,
+                type: 'inbound',
+                default_percentage_year_1: inRate,
+                default_percentage_year_2_plus: inRate,
+                setup_fee_percentage: inSetup,
+              })
+              await upsertCommissionProfile({
+                user_id: authData.user.id,
+                type: 'outbound',
+                default_percentage_year_1: outY1,
+                default_percentage_year_2_plus: outY2,
+                setup_fee_percentage: outSetup,
+              })
+            } catch (profErr) {
+              console.warn('Erro ao salvar perfis customizados no fallback de criação:', profErr)
+            }
+          }
         } else if (authErr) {
           throw authErr
         }
@@ -273,6 +416,38 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
         cc_hr: data.ccHr,
         cc_finance: data.ccFinance,
       })
+
+      // Se a nova role for admin, os perfis já foram limpos pelo updateUser.
+      // Se não for admin, salvar ou atualizar os perfis de comissão:
+      if (data.role !== 'admin') {
+        const inRate = parseFloat(editInboundRate.replace(',', '.')) || 3.0
+        const inSetup = editInboundSetup.trim()
+          ? parseFloat(editInboundSetup.replace(',', '.'))
+          : null
+        const outY1 = parseFloat(editOutboundY1.replace(',', '.')) || 5.0
+        const outY2 = parseFloat(editOutboundY2.replace(',', '.')) || 2.5
+        const outSetup = editOutboundSetup.trim()
+          ? parseFloat(editOutboundSetup.replace(',', '.'))
+          : null
+
+        await upsertCommissionProfile({
+          id: editInboundId || undefined,
+          user_id: editingUser.id,
+          type: 'inbound',
+          default_percentage_year_1: inRate,
+          default_percentage_year_2_plus: inRate,
+          setup_fee_percentage: inSetup,
+        })
+
+        await upsertCommissionProfile({
+          id: editOutboundId || undefined,
+          user_id: editingUser.id,
+          type: 'outbound',
+          default_percentage_year_1: outY1,
+          default_percentage_year_2_plus: outY2,
+          setup_fee_percentage: outSetup,
+        })
+      }
 
       toast({
         title: 'Utilizador Atualizado',
@@ -459,6 +634,113 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
                   )}
                 </div>
               </div>
+
+              {/* SEÇÃO: PERFIL DE COMISSÃO (Apenas visível para Vendedor / Gerente — Non-Commissionable Admin) */}
+              {editRole !== 'admin' ? (
+                <div className="rounded-xl border border-teal-200 bg-teal-50/30 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-teal-900">
+                      <Percent className="h-4 w-4 text-[#0F766E]" />
+                      <span>Perfil de Comissão (Inbound, Outbound & Taxa de Implantação)</span>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-teal-800 leading-relaxed">
+                    Alíquotas padrão aplicadas aos faturamentos dos clientes deste colaborador.
+                  </p>
+
+                  {loadingProfiles ? (
+                    <div className="py-2 text-center text-xs text-teal-700">
+                      Carregando regras...
+                    </div>
+                  ) : (
+                    <div className="space-y-3 pt-1">
+                      {/* Inbound */}
+                      <div className="p-2.5 rounded-lg bg-white border border-teal-200 space-y-2">
+                        <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                          Regra Inbound (Receptivo)
+                        </span>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="space-y-1">
+                            <Label className="text-[11px] text-slate-600">
+                              Alíquota Vitalícia (%)
+                            </Label>
+                            <Input
+                              value={editInboundRate}
+                              onChange={(e) => setEditInboundRate(e.target.value)}
+                              disabled={isSubmitting}
+                              className="h-8 text-xs tabular-nums"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-[11px] text-slate-600">
+                              Taxa Implantação (%)
+                            </Label>
+                            <Input
+                              value={editInboundSetup}
+                              onChange={(e) => setEditInboundSetup(e.target.value)}
+                              disabled={isSubmitting}
+                              placeholder="Opcional"
+                              className="h-8 text-xs tabular-nums"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Outbound */}
+                      <div className="p-2.5 rounded-lg bg-white border border-teal-200 space-y-2">
+                        <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-indigo-500" />
+                          Regra Outbound (Ativo)
+                        </span>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="space-y-1">
+                            <Label className="text-[11px] text-slate-600">1º Ano (%)</Label>
+                            <Input
+                              value={editOutboundY1}
+                              onChange={(e) => setEditOutboundY1(e.target.value)}
+                              disabled={isSubmitting}
+                              className="h-8 text-xs tabular-nums"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-[11px] text-slate-600">2º Ano+ (%)</Label>
+                            <Input
+                              value={editOutboundY2}
+                              onChange={(e) => setEditOutboundY2(e.target.value)}
+                              disabled={isSubmitting}
+                              className="h-8 text-xs tabular-nums"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-[11px] text-slate-600">
+                              Taxa Implantação (%)
+                            </Label>
+                            <Input
+                              value={editOutboundSetup}
+                              onChange={(e) => setEditOutboundSetup(e.target.value)}
+                              disabled={isSubmitting}
+                              placeholder="Opcional"
+                              className="h-8 text-xs tabular-nums"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-3 bg-slate-100 border border-slate-200 rounded-lg text-xs text-slate-600 flex items-start gap-2">
+                  <Info className="h-4 w-4 shrink-0 mt-0.5 text-slate-500" />
+                  <span>
+                    <strong>Perfil Não-Comissionável:</strong> Administradores possuem acesso total
+                    de gestão e não participam de regras ou recebimento de comissões. Ao salvar como
+                    Administrador, eventuais vínculos comerciais e perfis de comissão são
+                    desativados.
+                  </span>
+                </div>
+              )}
 
               {/* Preferências de Notificação Automática */}
               <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3.5 space-y-3">
@@ -823,6 +1105,98 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
                 )}
               </div>
             </div>
+
+            {/* SEÇÃO: PERFIL DE COMISSÃO (Apenas visível para Vendedor / Gerente — Non-Commissionable Admin) */}
+            {createRole !== 'admin' ? (
+              <div className="rounded-xl border border-teal-200 bg-teal-50/30 p-4 space-y-3">
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-teal-900">
+                  <Percent className="h-4 w-4 text-[#0F766E]" />
+                  <span>Perfil de Comissão Inicial (Inbound, Outbound & Taxa de Implantação)</span>
+                </div>
+
+                <p className="text-[11px] text-teal-800 leading-relaxed">
+                  Defina as alíquotas de remuneração deste colaborador. Você também poderá ajustar
+                  ou personalizar individualmente na aba Regras de Comissão.
+                </p>
+
+                <div className="space-y-3 pt-1">
+                  {/* Inbound */}
+                  <div className="p-2.5 rounded-lg bg-white border border-teal-200 space-y-2">
+                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                      Regra Inbound (Receptivo)
+                    </span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-slate-600">Alíquota Vitalícia (%)</Label>
+                        <Input
+                          value={createInboundRate}
+                          onChange={(e) => setCreateInboundRate(e.target.value)}
+                          disabled={isSubmitting}
+                          className="h-8 text-xs tabular-nums"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-slate-600">Taxa Implantação (%)</Label>
+                        <Input
+                          value={createInboundSetup}
+                          onChange={(e) => setCreateInboundSetup(e.target.value)}
+                          disabled={isSubmitting}
+                          placeholder="Opcional"
+                          className="h-8 text-xs tabular-nums"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Outbound */}
+                  <div className="p-2.5 rounded-lg bg-white border border-teal-200 space-y-2">
+                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-indigo-500" />
+                      Regra Outbound (Ativo)
+                    </span>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-slate-600">1º Ano (%)</Label>
+                        <Input
+                          value={createOutboundY1}
+                          onChange={(e) => setCreateOutboundY1(e.target.value)}
+                          disabled={isSubmitting}
+                          className="h-8 text-xs tabular-nums"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-slate-600">2º Ano+ (%)</Label>
+                        <Input
+                          value={createOutboundY2}
+                          onChange={(e) => setCreateOutboundY2(e.target.value)}
+                          disabled={isSubmitting}
+                          className="h-8 text-xs tabular-nums"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-slate-600">Taxa Implantação (%)</Label>
+                        <Input
+                          value={createOutboundSetup}
+                          onChange={(e) => setCreateOutboundSetup(e.target.value)}
+                          disabled={isSubmitting}
+                          placeholder="Opcional"
+                          className="h-8 text-xs tabular-nums"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="p-3 bg-slate-100 border border-slate-200 rounded-lg text-xs text-slate-600 flex items-start gap-2">
+                <Info className="h-4 w-4 shrink-0 mt-0.5 text-slate-500" />
+                <span>
+                  <strong>Perfil Não-Comissionável:</strong> Administradores possuem poderes totais
+                  de gestão do sistema e não são comissionados por clientes ou faturamentos.
+                </span>
+              </div>
+            )}
 
             {/* Preferências de Notificação Automática */}
             <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3.5 space-y-3">

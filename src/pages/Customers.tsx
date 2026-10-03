@@ -144,11 +144,11 @@ export default function Customers() {
     }
   }
 
-  // Load Eligible Users for Linking (Manager & Sales)
+  // Load Eligible Users for Linking (Manager & Sales - role != 'admin')
   const loadEligibleUsers = async () => {
     try {
       const users = await listEligibleCommissionUsers()
-      setEligibleUsers(users)
+      setEligibleUsers(users.filter((u) => u.role !== 'admin'))
     } catch (err) {
       console.error('Erro ao carregar usuários elegíveis:', err)
     }

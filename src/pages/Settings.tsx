@@ -289,6 +289,9 @@ export default function Settings() {
   // ==========================================
 
   const handleOpenProfileModal = (p?: CommissionProfile) => {
+    // Filtrar apenas utilizadores comissionáveis (excluindo role = 'admin')
+    const commissionableUsers = users.filter((u) => u.role !== 'admin')
+
     if (p) {
       setEditingProfile(p)
       setProfileUserId(p.user_id)
@@ -302,7 +305,7 @@ export default function Settings() {
       )
     } else {
       setEditingProfile(null)
-      setProfileUserId(users[0]?.id || '')
+      setProfileUserId(commissionableUsers[0]?.id || '')
       setProfileType('inbound')
       setProfileYear1('3.0')
       setProfileYear2('3.0')
@@ -1110,11 +1113,13 @@ export default function Settings() {
                     <SelectValue placeholder="Selecione o utilizador" />
                   </SelectTrigger>
                   <SelectContent>
-                    {users.map((u) => (
-                      <SelectItem key={u.id} value={u.id}>
-                        {u.name} ({u.role})
-                      </SelectItem>
-                    ))}
+                    {users
+                      .filter((u) => u.role !== 'admin')
+                      .map((u) => (
+                        <SelectItem key={u.id} value={u.id}>
+                          {u.name} ({u.role === 'manager' ? 'Gerente' : 'Vendedor'})
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
               </div>

@@ -453,12 +453,13 @@ export default function Reports() {
     })
   }, [billings, displayedCommissions, activeSelectedUserIds, originFilter])
 
-  // Group commissions by user for the payroll table & summary view
+  // Group commissions by user for the payroll table & summary view (Exclui estritamente role === 'admin')
   const usersWithCommissions = useMemo(() => {
+    const nonAdminUsers = allUsers.filter((u) => u.role !== 'admin')
     const targetUsers =
       activeSelectedUserIds.length > 0
-        ? allUsers.filter((u) => activeSelectedUserIds.includes(u.id))
-        : allUsers
+        ? nonAdminUsers.filter((u) => activeSelectedUserIds.includes(u.id))
+        : nonAdminUsers
 
     return targetUsers
       .map((u) => {
