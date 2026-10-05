@@ -346,10 +346,20 @@ export default function Customers() {
       await loadCustomers()
     } catch (err: any) {
       console.error(err)
+      const rawMsg: string = err.message || ''
+      const isOverlap =
+        rawMsg.includes('OVERLAP_ERROR') ||
+        rawMsg.toLowerCase().includes('vigência concorrente') ||
+        rawMsg.toLowerCase().includes('sobreposto')
+      const cleanDesc = isOverlap
+        ? rawMsg.replace(/.*OVERLAP_ERROR:\s*/, '')
+        : rawMsg || 'Falha ao aplicar alterações em lote.'
+
       toast({
-        title: 'Erro na atualização em massa',
-        description: err.message || 'Falha ao aplicar alterações em lote.',
+        title: isOverlap ? 'Conflito de Vigência em Lote' : 'Erro na atualização em massa',
+        description: cleanDesc,
         variant: 'destructive',
+        duration: isOverlap ? 8000 : 5000,
       })
     } finally {
       setBulkSaving(false)
@@ -502,10 +512,20 @@ export default function Customers() {
       }
     } catch (err: any) {
       console.error(err)
+      const rawMsg: string = err.message || ''
+      const isOverlap =
+        rawMsg.includes('OVERLAP_ERROR') ||
+        rawMsg.toLowerCase().includes('vigência concorrente') ||
+        rawMsg.toLowerCase().includes('sobreposto')
+      const cleanDesc = isOverlap
+        ? rawMsg.replace(/.*OVERLAP_ERROR:\s*/, '')
+        : rawMsg || 'Falha ao adicionar vínculo de usuário.'
+
       toast({
-        title: 'Erro ao vincular',
-        description: err.message || 'Falha ao adicionar vínculo de usuário.',
+        title: isOverlap ? 'Conflito de Vigência Detectado' : 'Erro ao vincular',
+        description: cleanDesc,
         variant: 'destructive',
+        duration: isOverlap ? 8000 : 5000,
       })
     } finally {
       setAddingUser(false)

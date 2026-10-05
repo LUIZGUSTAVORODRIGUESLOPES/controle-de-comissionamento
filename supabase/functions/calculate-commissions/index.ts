@@ -161,7 +161,7 @@ Deno.serve(async (req: Request) => {
       })
     }
 
-    // 1. Fetch monthly run
+    // 1. Initial check of monthly run
     const { data: run, error: runError } = await supabase
       .from('monthly_runs')
       .select('*')
@@ -263,14 +263,13 @@ Deno.serve(async (req: Request) => {
       commission_amount: number
     }> = []
 
-    // Store billing updates in memory first, then apply atomically to avoid partial state if an error occurs
     const billingUpdates: Array<{
       id: string
       net_amount: number
       tax_deductions_applied_json: TaxAppliedSnapshot[]
     }> = []
 
-    // Process each billing
+    // Process each billing deterministically
     for (const billing of billings || []) {
       const gross = Number(billing.gross_amount) || 0
       let totalDeductions = 0
@@ -337,9 +336,24 @@ Deno.serve(async (req: Request) => {
 
       const monthsActive = getMonthDifference(customer?.start_date, run.month_year)
       const customerStartYM = toYearMonth(customer?.start_date)
+
+      // IDEMPOTENCY & SETUP FEE:
+      // A taxa de implantação (setup fee) é uma cobrança one-off aplicada apenas
+      // quando a competência do faturamento (runYM) é estritamente igual ao mês/ano
+      // do start_date do cliente (customerStartYM).
+      // Ela substitui as alíquotas normais de comissão no 1º faturamento.
       const isFirstBillingMonth = Boolean(runYM && customerStartYM && runYM === customerStartYM)
 
+      // Usar Set para garantir que cada usuário receba no máximo uma comissão por faturamento
+      const processedUsersForThisBilling = new Set<string>()
+
       for (const link of linkedUsers) {
+        if (processedUsersForThisBilling.has(link.user_id)) {
+          // Já processado para este billing (proteção preventiva contra tuplas duplicadas)
+          continue
+        }
+        processedUsersForThisBilling.add(link.user_id)
+
         // Read commission_type directly from the link (customer_users), fallback to customer.origin or 'inbound'
         const linkRule = (link.commission_type || customer?.origin || 'inbound').toLowerCase()
 
@@ -353,7 +367,7 @@ Deno.serve(async (req: Request) => {
 
         let percentageToApply = 0
 
-        // SETUP FEE CHECK: If this is the 1st billing month AND profile has setup_fee_percentage configured
+        // SETUP FEE CHECK: Se for o primeiro mês de faturamento e o perfil ativo contiver setup_fee_percentage configurada
         const hasSetupFee =
           activeProfile &&
           activeProfile.setup_fee_percentage !== null &&
@@ -361,6 +375,7 @@ Deno.serve(async (req: Request) => {
           !isNaN(Number(activeProfile.setup_fee_percentage))
 
         if (isFirstBillingMonth && hasSetupFee) {
+          // Taxa de implantação substitui as alíquotas padrão de 1º e 2º ano
           percentageToApply = Number(activeProfile.setup_fee_percentage) || 0
         } else if (activeProfile) {
           if (linkRule === 'outbound') {
@@ -387,61 +402,36 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Apply billing updates
-    for (const bUpd of billingUpdates) {
-      const { error: updErr } = await supabase
-        .from('billings')
-        .update({
-          net_amount: bUpd.net_amount,
-          tax_deductions_applied_json: bUpd.tax_deductions_applied_json,
-        })
-        .eq('id', bUpd.id)
+    // =========================================================================
+    // ATOMIC & TRANSACTIONAL PERSISTENCE VIA POSTGRES RPC:
+    // 1. SELECT ... FOR UPDATE no monthly_run (row lock serializando execuções simultâneas)
+    // 2. Revalidação transacional de status != 'paid'
+    // 3. UPDATE billings (net_amount e deduções)
+    // 4. DELETE comissões antigas do monthly_run_id
+    // 5. INSERT das novas comissões
+    // 6. UPDATE monthly_runs.status = 'processed'
+    // Se qualquer etapa falhar, o Postgres aborta e reverte a transação inteira.
+    // =========================================================================
+    const { data: rpcResult, error: rpcError } = await supabase.rpc(
+      'commit_calculated_commissions',
+      {
+        p_monthly_run_id: monthly_run_id,
+        p_billing_updates: billingUpdates,
+        p_commission_inserts: commissionInserts,
+      },
+    )
 
-      if (updErr) {
-        throw new Error(
-          `Erro ao atualizar base líquida do faturamento ${bUpd.id}: ${updErr.message}`,
-        )
-      }
-    }
-
-    // Safely replace commissions: clean previous commissions and insert new ones
-    const billingIds = (billings || []).map((b) => b.id)
-    if (billingIds.length > 0) {
-      const { error: delErr } = await supabase
-        .from('commissions')
-        .delete()
-        .in('billing_id', billingIds)
-      if (delErr) {
-        throw new Error(`Erro ao limpar comissões anteriores: ${delErr.message}`)
-      }
-    }
-
-    // Insert commissions batch
-    if (commissionInserts.length > 0) {
-      const { error: insCommError } = await supabase.from('commissions').insert(commissionInserts)
-      if (insCommError) {
-        console.error('Erro ao inserir comissões:', insCommError)
-        return new Response(
-          JSON.stringify({ error: `Erro ao inserir comissões: ${insCommError.message}` }),
-          {
-            status: 500,
-            headers: { 'Content-Type': 'application/json', ...corsHeaders },
-          },
-        )
-      }
-    }
-
-    // 6. Update monthly_run status to processed
-    const { error: updateRunError } = await supabase
-      .from('monthly_runs')
-      .update({ status: 'processed' })
-      .eq('id', monthly_run_id)
-
-    if (updateRunError) {
+    if (rpcError) {
+      console.error('Erro na transação de gravação de comissões:', rpcError)
+      const isPaidLock = rpcError.message?.includes('RUN_LOCKED_PAID')
       return new Response(
-        JSON.stringify({ error: `Erro ao atualizar status: ${updateRunError.message}` }),
+        JSON.stringify({
+          error: isPaidLock
+            ? 'Este mês já está fechado e marcado como pago. O recálculo está bloqueado por compliance.'
+            : `Erro na transação de recálculo: ${rpcError.message}`,
+        }),
         {
-          status: 500,
+          status: isPaidLock ? 403 : 500,
           headers: { 'Content-Type': 'application/json', ...corsHeaders },
         },
       )
@@ -453,6 +443,7 @@ Deno.serve(async (req: Request) => {
         message: 'Mês processado com sucesso!',
         billingsProcessed: (billings || []).length,
         commissionsGenerated: commissionInserts.length,
+        details: rpcResult,
       }),
       {
         headers: { 'Content-Type': 'application/json', ...corsHeaders },

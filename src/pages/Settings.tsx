@@ -384,10 +384,20 @@ export default function Settings() {
       setProfileModalOpen(false)
       await loadData()
     } catch (err: any) {
+      const rawMsg: string = err.message || ''
+      const isOverlap =
+        rawMsg.includes('OVERLAP_ERROR') ||
+        rawMsg.toLowerCase().includes('vigência concorrente') ||
+        rawMsg.toLowerCase().includes('sobreposto')
+      const cleanDesc = isOverlap
+        ? rawMsg.replace(/.*OVERLAP_ERROR:\s*/, '')
+        : rawMsg || 'Não foi possível gravar o perfil de comissão.'
+
       toast({
-        title: 'Erro ao salvar perfil',
-        description: err.message,
+        title: isOverlap ? 'Conflito de Vigência de Perfil' : 'Erro ao salvar perfil',
+        description: cleanDesc,
         variant: 'destructive',
+        duration: isOverlap ? 8000 : 5000,
       })
     } finally {
       setSavingProfile(false)

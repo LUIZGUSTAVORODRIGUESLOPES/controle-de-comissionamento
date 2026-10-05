@@ -457,10 +457,20 @@ export function UserModal({ open, onOpenChange, editingUser, onSuccess }: UserMo
       onOpenChange(false)
       await onSuccess()
     } catch (err: any) {
+      const rawMsg: string = err.message || ''
+      const isOverlap =
+        rawMsg.includes('OVERLAP_ERROR') ||
+        rawMsg.toLowerCase().includes('vigência concorrente') ||
+        rawMsg.toLowerCase().includes('sobreposto')
+      const cleanDesc = isOverlap
+        ? rawMsg.replace(/.*OVERLAP_ERROR:\s*/, '')
+        : rawMsg || 'Falha na operação.'
+
       toast({
-        title: 'Erro ao atualizar utilizador',
-        description: err.message || 'Falha na operação.',
+        title: isOverlap ? 'Conflito de Vigência de Perfil' : 'Erro ao atualizar utilizador',
+        description: cleanDesc,
         variant: 'destructive',
+        duration: isOverlap ? 8000 : 5000,
       })
     }
   }
