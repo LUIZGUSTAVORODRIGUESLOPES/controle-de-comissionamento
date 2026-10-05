@@ -10,8 +10,6 @@ import type {
   Commission,
   SystemSettings,
 } from '@/types/database'
-import { evaluateTaxFormula } from '@/lib/formulaEvaluator'
-
 // ==========================================
 // Monthly Runs & Processing
 // ==========================================
@@ -600,37 +598,10 @@ export async function getPendingBillings(monthlyRunId: string): Promise<Billing[
 }
 
 // ==========================================
-// Execution Engine (Client-side Fallback & Edge Function)
+// Execution Engine (Backend Edge Function ONLY)
 // ==========================================
 
-export async function processMonthlyRun(monthlyRunId: string): Promise<{
-  success: boolean
-  message: string
-  billingsProcessed?: number
-  commissionsGenerated?: number
-}> {
-  // First attempt: invoke Supabase Edge Function
-  try {
-    const { data, error } = await supabase.functions.invoke('calculate-commissions', {
-      body: { monthly_run_id: monthlyRunId },
-    })
-
-    if (!error && data?.success) {
-      return data
-    }
-    console.warn(
-      'Edge function returned error or was unavailable, using client-side calculation engine:',
-      error,
-    )
-  } catch (fnErr) {
-    console.warn('Failed calling edge function, executing client-side engine fallback:', fnErr)
-  }
-
-  // Robust Client-side Engine implementation
-  return await processMonthlyRunClientSide(monthlyRunId)
-}
-
-// Format date string to YYYY-MM
+// Format date string to YYYY-MM (UI helper for displaying active profile in customer view)
 function toYearMonth(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null
   const clean = dateStr.trim().split('T')[0]
@@ -641,17 +612,6 @@ function toYearMonth(dateStr: string | null | undefined): string | null {
     return `${yyyy}-${mm}`
   }
   return null
-}
-
-function getMonthsDiff(startDateStr: string | null | undefined, runMonthStr: string): number {
-  if (!startDateStr) return 0
-  const start = new Date(startDateStr)
-  const run = new Date(runMonthStr)
-  if (isNaN(start.getTime()) || isNaN(run.getTime())) return 0
-  return Math.max(
-    0,
-    (run.getFullYear() - start.getFullYear()) * 12 + (run.getMonth() - start.getMonth()),
-  )
 }
 
 function isPeriodValidForMonth(
@@ -675,15 +635,7 @@ function isPeriodValidForMonth(
   return true
 }
 
-function isLinkValidForMonth(
-  validFromStr: string | null | undefined,
-  validUntilStr: string | null | undefined,
-  runMonthStr: string,
-): boolean {
-  return isPeriodValidForMonth(validFromStr, validUntilStr, runMonthStr)
-}
-
-// Find best matching commission profile for user, rule type and competence month
+// Find best matching commission profile for user, rule type and competence month (used by UI preview/display only)
 export function findActiveCommissionProfile(
   profiles: CommissionProfile[],
   userId: string,
@@ -733,177 +685,36 @@ export function findActiveCommissionProfile(
   return null
 }
 
-async function processMonthlyRunClientSide(monthlyRunId: string) {
-  // 1. Fetch run
-  const run = await getMonthlyRunById(monthlyRunId)
-  if (!run) throw new Error('Execução não encontrada')
+/**
+ * Invokes the secure Backend Edge Function `calculate-commissions`.
+ * In a financial system, all mathematical calculations, tax deductions, and commission insertions
+ * MUST execute exclusively on the backend. No client-side fallback is permitted.
+ */
+export async function processMonthlyRun(monthlyRunId: string): Promise<{
+  success: boolean
+  message: string
+  billingsProcessed?: number
+  commissionsGenerated?: number
+}> {
+  const { data, error } = await supabase.functions.invoke('calculate-commissions', {
+    body: { monthly_run_id: monthlyRunId },
+  })
 
-  if (run.status === 'paid') {
-    throw new Error(
-      'Este mês já está fechado e marcado como pago. O recálculo está bloqueado por compliance.',
-    )
+  if (error) {
+    const errorMsg =
+      (data && typeof data === 'object' && 'error' in data && data.error) ||
+      error.message ||
+      'Falha ao calcular comissões no servidor.'
+    throw new Error(errorMsg)
   }
 
-  const globalBilling = Number(run.gross_company_billing) || 0
-
-  // 2. Fetch billings
-  const billings = await getBillingsForRun(monthlyRunId)
-
-  // 3. Fetch active taxes
-  const { data: taxes } = await db.from('tax_deductions').select('*').eq('is_active', true)
-
-  const activeTaxes = (taxes as unknown as TaxDeduction[]) || []
-
-  // 4. Fetch profiles & customer_users
-  const { data: profilesData } = await db.from('commission_profiles').select('*')
-  const profiles = (profilesData as unknown as CommissionProfile[]) || []
-
-  const { data: cuData } = await db.from('customer_users').select('*')
-  const customerUsers = (cuData as any[]) || []
-
-  const commissionInserts: Array<{
-    billing_id: string
-    user_id: string
-    percentage_applied: number
-    commission_amount: number
-  }> = []
-
-  for (const billing of billings) {
-    const gross = Number(billing.gross_amount) || 0
-    let totalDeducted = 0
-    const snapshots: Array<{
-      name: string
-      type: 'percentage' | 'formula'
-      value?: number | null
-      expression?: string | null
-      deducted: number
-    }> = []
-
-    for (const tax of activeTaxes) {
-      let deducted = 0
-      if (tax.type === 'percentage') {
-        const pct = Number(tax.value) || 0
-        deducted = gross * (pct / 100)
-        snapshots.push({
-          name: tax.name,
-          type: 'percentage',
-          value: pct,
-          deducted: Math.round(deducted * 100) / 100,
-        })
-      } else if (tax.type === 'formula') {
-        const evalRes = evaluateTaxFormula(tax.formula_expression || '0', {
-          CLIENT_BILLING: gross,
-          GLOBAL_BILLING: globalBilling,
-        })
-        if (!evalRes.error) {
-          deducted = evalRes.result
-        }
-        snapshots.push({
-          name: tax.name,
-          type: 'formula',
-          expression: tax.formula_expression,
-          deducted: Math.round(deducted * 100) / 100,
-        })
-      }
-      totalDeducted += deducted
-    }
-
-    const netAmount = Math.max(0, Math.round((gross - totalDeducted) * 100) / 100)
-
-    // Update billing
-    await db
-      .from('billings')
-      .update({
-        net_amount: netAmount,
-        tax_deductions_applied_json: snapshots,
-      })
-      .eq('id', billing.id)
-
-    const cust = billing.customer
-    if (cust?.no_commission_flag) {
-      continue
-    }
-
-    const rawLinked = customerUsers.filter((cu) => cu.customer_id === billing.customer_id)
-    // Filter by validity period (valid_from and valid_until)
-    const linked = rawLinked.filter((cu) =>
-      isLinkValidForMonth(cu.valid_from, cu.valid_until, run.month_year),
-    )
-
-    const months = getMonthsDiff(cust?.start_date, run.month_year)
-    const runYM = toYearMonth(run.month_year)
-    const customerStartYM = toYearMonth(cust?.start_date)
-    const isFirstBillingMonth = Boolean(runYM && customerStartYM && runYM === customerStartYM)
-
-    for (const link of linked) {
-      const linkRule = (link.commission_type || cust?.origin || 'inbound').toLowerCase()
-      const activeProf = findActiveCommissionProfile(
-        profiles,
-        link.user_id,
-        linkRule,
-        run.month_year,
-      )
-
-      let pct = 0
-
-      // SETUP FEE CHECK: If this is the 1st billing month AND profile has setup_fee_percentage configured
-      const hasSetupFee =
-        activeProf &&
-        activeProf.setup_fee_percentage !== null &&
-        activeProf.setup_fee_percentage !== undefined &&
-        !isNaN(Number(activeProf.setup_fee_percentage))
-
-      if (isFirstBillingMonth && hasSetupFee) {
-        pct = Number(activeProf.setup_fee_percentage) || 0
-      } else if (activeProf) {
-        if (linkRule === 'outbound') {
-          pct =
-            months <= 12
-              ? Number(activeProf.default_percentage_year_1) || 0
-              : Number(activeProf.default_percentage_year_2_plus) || 0
-        } else {
-          pct = Number(activeProf.default_percentage_year_1) || 0
-        }
-      }
-
-      const commissionVal = Math.round(((netAmount * pct) / 100) * 100) / 100
-
-      commissionInserts.push({
-        billing_id: billing.id,
-        user_id: link.user_id,
-        percentage_applied: pct,
-        commission_amount: commissionVal,
-      })
-    }
+  if (!data?.success) {
+    const errorMsg =
+      data?.error || 'A Edge Function retornou status de erro ao processar comissões.'
+    throw new Error(errorMsg)
   }
 
-  // Safe atomic-like replacement pattern:
-  // First clear prior commissions only after all computations succeeded, then insert new ones
-  const bIds = billings.map((b) => b.id)
-  if (bIds.length > 0) {
-    const { error: delCommErr } = await db.from('commissions').delete().in('billing_id', bIds)
-    if (delCommErr) throw delCommErr
-  }
-
-  if (commissionInserts.length > 0) {
-    const { error: commError } = await db.from('commissions').insert(commissionInserts)
-    if (commError) throw commError
-  }
-
-  // Update run status
-  const { error: runErr } = await db
-    .from('monthly_runs')
-    .update({ status: 'processed' })
-    .eq('id', monthlyRunId)
-
-  if (runErr) throw runErr
-
-  return {
-    success: true,
-    message: 'Mês processado com sucesso!',
-    billingsProcessed: billings.length,
-    commissionsGenerated: commissionInserts.length,
-  }
+  return data
 }
 
 // ==========================================

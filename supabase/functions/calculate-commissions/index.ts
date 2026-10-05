@@ -1,7 +1,7 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'npm:@supabase/supabase-js@2'
-import { compile } from 'npm:mathjs@^14.0.1'
 import { corsHeaders } from '../_shared/cors.ts'
+import { evaluateTaxFormula } from '../_shared/formulaEvaluator.ts'
 
 interface CalculateRequest {
   monthly_run_id: string
@@ -69,7 +69,7 @@ function isPeriodValidForMonth(
   return true
 }
 
-// Alias for link validity check
+// Check link validity for customer_users
 function isLinkValidForMonth(
   validFromStr: string | null | undefined,
   validUntilStr: string | null | undefined,
@@ -127,6 +127,7 @@ function findActiveCommissionProfile(
 
   return null
 }
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -134,10 +135,11 @@ Deno.serve(async (req: Request) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-    const supabaseKey =
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+    const supabaseKey = serviceRoleKey || anonKey
 
-    // Create client using user auth token if present
+    // Create client using service role key (or caller auth header) for secure backend database operations
     const authHeader = req.headers.get('Authorization') ?? ''
     const supabase = createClient(supabaseUrl, supabaseKey, {
       auth: {
@@ -145,7 +147,7 @@ Deno.serve(async (req: Request) => {
         autoRefreshToken: false,
       },
       global: {
-        headers: authHeader ? { Authorization: authHeader } : {},
+        headers: !serviceRoleKey && authHeader ? { Authorization: authHeader } : {},
       },
     })
 
@@ -261,6 +263,13 @@ Deno.serve(async (req: Request) => {
       commission_amount: number
     }> = []
 
+    // Store billing updates in memory first, then apply atomically to avoid partial state if an error occurs
+    const billingUpdates: Array<{
+      id: string
+      net_amount: number
+      tax_deductions_applied_json: TaxAppliedSnapshot[]
+    }> = []
+
     // Process each billing
     for (const billing of billings || []) {
       const gross = Number(billing.gross_amount) || 0
@@ -279,33 +288,24 @@ Deno.serve(async (req: Request) => {
             deducted: Math.round(deductedAmount * 100) / 100,
           })
         } else if (tax.type === 'formula') {
-          try {
-            const expr = tax.formula_expression || '0'
-            const compiled = compile(expr)
-            const result = compiled.evaluate({
-              CLIENT_BILLING: gross,
-              GLOBAL_BILLING: globalBilling,
-            })
-            deductedAmount = Number(result)
-            if (isNaN(deductedAmount) || !isFinite(deductedAmount)) {
-              deductedAmount = 0
-            }
-            deductionsSnapshot.push({
-              name: tax.name,
-              type: 'formula',
-              expression: expr,
-              deducted: Math.round(deductedAmount * 100) / 100,
-            })
-          } catch (calcErr) {
-            console.error(`Erro avaliando fórmula do imposto ${tax.name}:`, calcErr)
-            deductionsSnapshot.push({
-              name: tax.name,
-              type: 'formula',
-              expression: tax.formula_expression,
-              deducted: 0,
-            })
+          const evalRes = evaluateTaxFormula(tax.formula_expression || '0', {
+            CLIENT_BILLING: gross,
+            GLOBAL_BILLING: globalBilling,
+          })
+
+          if (evalRes.error) {
+            console.error(`Erro avaliando fórmula do imposto ${tax.name}:`, evalRes.error)
             deductedAmount = 0
+          } else {
+            deductedAmount = evalRes.result
           }
+
+          deductionsSnapshot.push({
+            name: tax.name,
+            type: 'formula',
+            expression: tax.formula_expression,
+            deducted: Math.round(deductedAmount * 100) / 100,
+          })
         }
         totalDeductions += deductedAmount
       }
@@ -313,14 +313,11 @@ Deno.serve(async (req: Request) => {
       const netAmount = Math.max(0, gross - totalDeductions)
       const roundedNet = Math.round(netAmount * 100) / 100
 
-      // Update billing record with net_amount and snapshot
-      await supabase
-        .from('billings')
-        .update({
-          net_amount: roundedNet,
-          tax_deductions_applied_json: deductionsSnapshot,
-        })
-        .eq('id', billing.id)
+      billingUpdates.push({
+        id: billing.id,
+        net_amount: roundedNet,
+        tax_deductions_applied_json: deductionsSnapshot,
+      })
 
       const customer = billing.customer
       // If no_commission_flag is true, skip commission calculation
@@ -390,10 +387,33 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Safely replace commissions: clean previous and insert new
+    // Apply billing updates
+    for (const bUpd of billingUpdates) {
+      const { error: updErr } = await supabase
+        .from('billings')
+        .update({
+          net_amount: bUpd.net_amount,
+          tax_deductions_applied_json: bUpd.tax_deductions_applied_json,
+        })
+        .eq('id', bUpd.id)
+
+      if (updErr) {
+        throw new Error(
+          `Erro ao atualizar base líquida do faturamento ${bUpd.id}: ${updErr.message}`,
+        )
+      }
+    }
+
+    // Safely replace commissions: clean previous commissions and insert new ones
     const billingIds = (billings || []).map((b) => b.id)
     if (billingIds.length > 0) {
-      await supabase.from('commissions').delete().in('billing_id', billingIds)
+      const { error: delErr } = await supabase
+        .from('commissions')
+        .delete()
+        .in('billing_id', billingIds)
+      if (delErr) {
+        throw new Error(`Erro ao limpar comissões anteriores: ${delErr.message}`)
+      }
     }
 
     // Insert commissions batch

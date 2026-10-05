@@ -1,6 +1,9 @@
-// Browser-safe math formula evaluation for dynamic tax deductions
-// CLIENT_BILLING: gross billing of this customer
-// GLOBAL_BILLING: company gross billing for the month
+// PREVIEW ONLY: Client-side syntax validator and preview for tax formulas in Settings.
+// ATTENTION: All actual financial calculations and commission deductions MUST occur
+// exclusively on the backend (Edge Function calculate-commissions). This helper is NEVER
+// to be used for financial accounting or commission record persistence.
+// CLIENT_BILLING: gross billing of this customer (preview example)
+// GLOBAL_BILLING: company gross billing for the month (preview example)
 // Supported operations: +, -, *, /, (, ), decimals
 
 export function evaluateTaxFormula(
