@@ -234,7 +234,7 @@ export default function Upload() {
         const name = row.name.trim()
         const gross = row.grossAmount
 
-        if (!code) continue
+        if (!code || gross <= 0) continue
 
         // Upsert customer by customer_code exclusively
         const cust = await upsertCustomerByCode(code, name || `Cliente ${code}`)
@@ -549,7 +549,7 @@ export default function Upload() {
 
                     <div className="bg-white p-2.5 rounded-lg border border-emerald-100 shadow-xs">
                       <span className="text-emerald-700 font-medium block text-[11px]">
-                        A Importar (com valor/0)
+                        A Importar (com faturamento)
                       </span>
                       <span className="text-base font-bold text-emerald-700 tabular-nums">
                         {parseResult.stats.importedRows}
@@ -558,7 +558,7 @@ export default function Upload() {
 
                     <div className="bg-white p-2.5 rounded-lg border border-slate-100 shadow-xs">
                       <span className="text-slate-500 block text-[11px]">
-                        Linhas Ignoradas (sem valor)
+                        Linhas Ignoradas (sem valor / zero)
                       </span>
                       <span className="text-base font-bold text-slate-600 tabular-nums">
                         {parseResult.stats.ignoredEmptyValueRows}
@@ -578,10 +578,9 @@ export default function Upload() {
 
                   {parseResult.stats.ignoredEmptyValueRows > 0 && (
                     <p className="text-[11px] text-slate-500 bg-amber-50/60 border border-amber-100 p-2 rounded text-amber-900">
-                      ℹ️ {parseResult.stats.ignoredEmptyValueRows} clientes com células vazias ou
-                      traço ("—") na coluna de faturamento foram desconsiderados conforme regra de
-                      apuração. Clientes com faturamento zero (R$ 0,00) serão devidamente
-                      importados.
+                      ℹ️ {parseResult.stats.ignoredEmptyValueRows} clientes com células vazias,
+                      traço ("—") ou preenchidas com valor zero (R$ 0,00) foram desconsiderados
+                      conforme regra de apuração (não participam de comissões nem relatórios).
                     </p>
                   )}
                 </div>

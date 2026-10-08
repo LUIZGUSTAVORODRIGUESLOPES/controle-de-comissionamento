@@ -38,11 +38,12 @@ export function parseCurrency(val: any): number {
   return isNaN(num) ? 0 : num
 }
 
-// Check whether a cell value represents a numeric/billable value (including 0)
-// Empty, whitespace, "—", "-", "n/a", null, undefined are non-billable
+// Check whether a cell value represents a billable positive value (> 0).
+// Empty, whitespace, "—", "-", "n/a", null, undefined, as well as 0 ("0", "0,00", "0.00", 0 numeric)
+// are non-billable and must be treated equally as "no billing" (excluir da apuração/relatório).
 export function isBillableValue(val: any): boolean {
   if (val === null || val === undefined) return false
-  if (typeof val === 'number') return !isNaN(val)
+  if (typeof val === 'number') return !isNaN(val) && val > 0
   const s = String(val).trim()
   if (
     s === '' ||
@@ -51,7 +52,8 @@ export function isBillableValue(val: any): boolean {
     s === '–' ||
     s === 'null' ||
     s === 'undefined' ||
-    s === 'N/A'
+    s === 'N/A' ||
+    s === 'n/a'
   ) {
     return false
   }
@@ -61,7 +63,7 @@ export function isBillableValue(val: any): boolean {
   // Check if string has digits
   if (!/\d/.test(clean)) return false
   const parsed = parseCurrency(s)
-  return !isNaN(parsed)
+  return !isNaN(parsed) && parsed > 0
 }
 
 // Date detector: matches Date object, or parseable date string, or ISO string
@@ -494,7 +496,7 @@ export function analyzeAndExtractSpreadsheet(matrix: any[][]): ParseResult {
     const startRow = Math.min(matrix.length - 1, 2)
     const maxCols = Math.max(...matrix.slice(0, 10).map((r) => r.length), 0)
 
-    if (maxCols >= 3) {
+    if (maxCols >= 2) {
       let bestCodeCol = -1
       let bestNameCol = -1
       let bestAmountCol = -1
@@ -519,12 +521,12 @@ export function analyzeAndExtractSpreadsheet(matrix: any[][]): ParseResult {
             codePatternCount++
           }
 
-          // Numeric
+          // Numeric (positive money or decimal)
           if (typeof val === 'number' || (!isNaN(parseCurrency(val)) && /\d/.test(s))) {
             numericCount++
           }
 
-          if (typeof val === 'string' && s.length > 3) {
+          if (typeof val === 'string' && s.length > 2 && isNaN(parseCurrency(s))) {
             textCount++
             avgTextLength += s.length
           }
@@ -532,29 +534,51 @@ export function analyzeAndExtractSpreadsheet(matrix: any[][]): ParseResult {
 
         if (codePatternCount >= sampleRows.length * 0.4 && bestCodeCol === -1) {
           bestCodeCol = c
-        } else if (numericCount >= sampleRows.length * 0.4) {
-          // Prefer first numeric column as amount
-          if (bestAmountCol === -1) {
-            bestAmountCol = c
-          }
-        } else if (
-          textCount >= sampleRows.length * 0.4 &&
-          (bestNameCol === -1 || avgTextLength > 10)
-        ) {
+        } else if (numericCount >= sampleRows.length * 0.4 && bestAmountCol === -1) {
+          bestAmountCol = c
+        } else if (textCount >= sampleRows.length * 0.4 && bestNameCol === -1) {
           bestNameCol = c
         }
       }
 
-      if (bestCodeCol !== -1 && bestAmountCol !== -1) {
-        headerRowIndex = startRow > 0 ? startRow - 1 : 0
-        detectedMapping = {
-          codeColIdx: bestCodeCol,
-          nameColIdx: bestNameCol !== -1 ? bestNameCol : bestCodeCol === 0 ? 1 : 0,
-          amountColIdx: bestAmountCol,
-          codeColName: 'Código (inferido)',
-          nameColName: 'Cliente (inferido)',
-          amountColName: 'Valor (inferido)',
-          confidence: 'low',
+      // Se temos ao menos uma coluna numérica para valor e colunas de texto
+      if (bestAmountCol !== -1) {
+        // Se temos código e nome distintos
+        if (bestCodeCol !== -1 && bestNameCol !== -1 && bestCodeCol !== bestNameCol) {
+          headerRowIndex = startRow > 0 ? startRow - 1 : 0
+          detectedMapping = {
+            codeColIdx: bestCodeCol,
+            nameColIdx: bestNameCol,
+            amountColIdx: bestAmountCol,
+            codeColName: 'Código (inferido)',
+            nameColName: 'Cliente (inferido)',
+            amountColName: 'Valor (inferido)',
+            confidence: 'low',
+          }
+        } else if (bestNameCol !== -1 && bestCodeCol === -1) {
+          // Apenas nome e valor presentes (arquivo de 2 colunas: Cliente, Valor)
+          headerRowIndex = startRow > 0 ? startRow - 1 : 0
+          detectedMapping = {
+            codeColIdx: bestNameCol,
+            nameColIdx: bestNameCol,
+            amountColIdx: bestAmountCol,
+            codeColName: 'Cliente (inferido)',
+            nameColName: 'Cliente (inferido)',
+            amountColName: 'Valor (inferido)',
+            confidence: 'low',
+          }
+        } else if (bestCodeCol !== -1 && bestNameCol === -1) {
+          // Apenas código e valor presentes
+          headerRowIndex = startRow > 0 ? startRow - 1 : 0
+          detectedMapping = {
+            codeColIdx: bestCodeCol,
+            nameColIdx: bestCodeCol,
+            amountColIdx: bestAmountCol,
+            codeColName: 'Código (inferido)',
+            nameColName: 'Código (inferido)',
+            amountColName: 'Valor (inferido)',
+            confidence: 'low',
+          }
         }
       }
     }
@@ -662,17 +686,22 @@ export function analyzeAndExtractSpreadsheet(matrix: any[][]): ParseResult {
     // This is a recognized client data row!
     stats.recognizedDataRows++
 
-    // Requirement 4: Tratamento de valores
-    // célula vazia, "—" ou não numérica na coluna de valor -> linha sem faturamento no mês
-    // Decisão de produto: linhas com valor vazio devem ser IGNORADAS, reportadas como "linhas ignoradas (sem valor)"
-    // Valor 0 DEVE ser importado normalmente (cliente faturou zero).
+    // Tratamento de valores (Bug 3):
+    // Célula vazia, preenchida com zero ("0", "0,00", 0), "—" ou não numérica -> linha sem faturamento no mês
+    // Devem receber a MESMA tratativa: NÃO aparecer no relatório e ser excluídas da apuração/importação.
     if (!isBillableValue(rawAmount)) {
       stats.ignoredEmptyValueRows++
       continue
     }
 
     const gross = parseCurrency(rawAmount)
+    if (gross <= 0) {
+      stats.ignoredEmptyValueRows++
+      continue
+    }
 
+    // Validação de sanidade: se porventura codeStr for puramente numérico com decimais ou o nameStr for o código
+    // garantir que se nameStr estiver vazio ou for idêntico ao código, nameStr seja amigável
     extractedRows.push({
       code: codeStr,
       name: nameStr || `Cliente ${codeStr}`,

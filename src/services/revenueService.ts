@@ -104,16 +104,18 @@ export async function getRevenueBillings(): Promise<RevenueBillingRow[]> {
 
   if (!data) return []
 
-  return data.map((item: any) => ({
-    id: item.id,
-    monthly_run_id: item.monthly_run_id,
-    customer_id: item.customer_id,
-    gross_amount: Number(item.gross_amount) || 0,
-    net_amount: Number(item.net_amount) || 0,
-    month_year: item.monthly_runs?.month_year || '',
-    status: item.monthly_runs?.status || '',
-    customer_name: item.customers?.name || 'Cliente Sem Nome',
-    customer_code: item.customers?.customer_code || '',
-    customer_origin: (item.customers?.origin as CustomerOrigin) || 'inbound',
-  }))
+  return data
+    .filter((item: any) => Number(item.gross_amount) > 0)
+    .map((item: any) => ({
+      id: item.id,
+      monthly_run_id: item.monthly_run_id,
+      customer_id: item.customer_id,
+      gross_amount: Number(item.gross_amount) || 0,
+      net_amount: Number(item.net_amount) || 0,
+      month_year: item.monthly_runs?.month_year || '',
+      status: item.monthly_runs?.status || '',
+      customer_name: item.customers?.name || 'Cliente Sem Nome',
+      customer_code: item.customers?.customer_code || '',
+      customer_origin: (item.customers?.origin as CustomerOrigin) || 'inbound',
+    }))
 }

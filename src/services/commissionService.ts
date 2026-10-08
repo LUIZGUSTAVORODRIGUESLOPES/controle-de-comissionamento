@@ -729,9 +729,13 @@ export async function getCommissionsForRun(monthlyRunId: string): Promise<Commis
 
   if (error) throw error
 
-  // Filter commissions by billing.monthly_run_id
+  // Filter commissions by billing.monthly_run_id and exclude zero/null gross billing (Bug 3)
   const filtered = ((data as unknown as Commission[]) || []).filter(
-    (c) => c.billing?.monthly_run_id === monthlyRunId,
+    (c) =>
+      c.billing?.monthly_run_id === monthlyRunId &&
+      c.billing?.gross_amount !== undefined &&
+      c.billing?.gross_amount !== null &&
+      Number(c.billing.gross_amount) > 0,
   )
   return filtered
 }
@@ -744,7 +748,10 @@ export async function getBillingsForRuns(monthlyRunIds: string[]): Promise<Billi
     .in('monthly_run_id', monthlyRunIds)
 
   if (error) throw error
-  return (data as unknown as Billing[]) || []
+  // Filter out any billings with gross_amount <= 0 or null (Bug 3)
+  return ((data as unknown as Billing[]) || []).filter(
+    (b) => b.gross_amount !== undefined && b.gross_amount !== null && Number(b.gross_amount) > 0,
+  )
 }
 
 export async function getCommissionsForRuns(monthlyRunIds: string[]): Promise<Commission[]> {
@@ -758,7 +765,12 @@ export async function getCommissionsForRuns(monthlyRunIds: string[]): Promise<Co
 
   const runIdSet = new Set(monthlyRunIds)
   const filtered = ((data as unknown as Commission[]) || []).filter(
-    (c) => c.billing?.monthly_run_id && runIdSet.has(c.billing.monthly_run_id),
+    (c) =>
+      c.billing?.monthly_run_id &&
+      runIdSet.has(c.billing.monthly_run_id) &&
+      c.billing?.gross_amount !== undefined &&
+      c.billing?.gross_amount !== null &&
+      Number(c.billing.gross_amount) > 0,
   )
   return filtered
 }

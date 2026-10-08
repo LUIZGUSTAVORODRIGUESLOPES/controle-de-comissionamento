@@ -440,9 +440,12 @@ export default function Reports() {
     })
   }, [commissions, activeSelectedUserIds, originFilter])
 
-  // Active billings based on seller filter & origin filter
+  // Active billings based on seller filter & origin filter (exclui gross_amount zero/nulo - Bug 3)
   const displayedBillings = useMemo(() => {
     return billings.filter((b) => {
+      const grossVal = Number(b.gross_amount) || 0
+      if (grossVal <= 0) return false
+
       // Origin filter
       if (originFilter !== 'all') {
         const custOrigin = b.customer?.origin?.toLowerCase()

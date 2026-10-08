@@ -269,9 +269,12 @@ Deno.serve(async (req: Request) => {
       tax_deductions_applied_json: TaxAppliedSnapshot[]
     }> = []
 
-    // Process each billing deterministically
+    // Process each billing deterministically (excluindo clientes sem faturamento / zero)
     for (const billing of billings || []) {
       const gross = Number(billing.gross_amount) || 0
+      if (gross <= 0) {
+        continue
+      }
       let totalDeductions = 0
       const deductionsSnapshot: TaxAppliedSnapshot[] = []
 
