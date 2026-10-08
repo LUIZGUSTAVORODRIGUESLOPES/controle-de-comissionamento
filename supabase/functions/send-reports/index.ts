@@ -277,7 +277,7 @@ Deno.serve(async (req: Request) => {
         lower.includes('domain not verified') ||
         lower.includes('verify a domain') ||
         lower.includes('only send testing emails to your own email address') ||
-        (lower.includes('validation_error') && lower.includes('domain'))
+        lower.includes('validation_error') && lower.includes('domain')
       ) {
         return 'O Resend bloqueou o envio: o remetente onboarding@resend.dev só permite e-mails de teste para o próprio e-mail da conta Resend. Verifique um domínio no painel do Resend e cadastre o secret RESEND_FROM_EMAIL.'
       }
@@ -417,8 +417,7 @@ Deno.serve(async (req: Request) => {
         details: deliveryResults,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-    )
-  } catch (err: any) {
+    )  } catch (err: any) {
     console.error('Erro na Edge Function send-reports:', err)
     return new Response(
       JSON.stringify({ success: false, error: err.message || 'Erro interno no servidor.' }),
