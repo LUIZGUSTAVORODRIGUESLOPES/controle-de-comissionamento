@@ -94,6 +94,10 @@ Deno.serve(async (req: Request) => {
       )
     }
 
+    const callerName =
+      callerProfile.name?.trim() || callerProfile.email || 'Administrador do Sistema'
+    const callerEmail = callerProfile.email?.trim() || ''
+
     // 2. Parse request payload
     let body: SendReportsRequestBody = {}
     try {
@@ -483,7 +487,13 @@ Deno.serve(async (req: Request) => {
           </tbody>
         </table>
 
-        <p style="font-size: 12px; color: #64748b; line-height: 1.5; margin-top: 24px;">
+        <div style="background-color: #f8fafc; border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-size: 12px; color: #64748b; border: 1px solid #e2e8f0;">
+          <p style="margin: 0; line-height: 1.5;">
+            <strong>Disparado por:</strong> ${callerName}${callerEmail ? ` (${callerEmail})` : ''} &bull; Gestão de Comissões
+          </p>
+        </div>
+
+        <p style="font-size: 12px; color: #64748b; line-height: 1.5; margin-top: 20px;">
           Para consultar a relação completa de clientes faturados, alíquotas aplicadas e deduções tributárias detalhadas, acesse o painel de comissões do sistema.
         </p>
 
@@ -505,15 +515,31 @@ Deno.serve(async (req: Request) => {
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #1e293b; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px;">
           <div style="border-bottom: 2px solid #0f766e; padding-bottom: 16px; margin-bottom: 20px;">
             <h2 style="color: #0f766e; margin: 0; font-size: 20px;">${companyName}</h2>
-            <p style="margin: 4px 0 0 0; color: #64748b; font-size: 13px;">Cópia de Gestão & Compliance &bull; Fechamento Mensal</p>
+            <p style="margin: 4px 0 0 0; color: #64748b; font-size: 13px;">Cópia de Gestão &bull; Fechamento Mensal</p>
           </div>
 
-          <p style="font-size: 15px; line-height: 1.5; color: #334155;">
-            Olá, <strong>${item.recipientName}</strong>,
-          </p>
-          <p style="font-size: 14px; line-height: 1.5; color: #475569;">
-            Este é o resumo consolidado de gestão do fechamento de comissões para a competência de <strong>${competenceText}</strong>:
-          </p>
+          <div style="background-color: #f0fdfa; border: 1px solid #ccfbf1; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px;">
+            <p style="margin: 0; font-size: 14px; color: #115e59; font-weight: 700;">
+              Olá, ${item.recipientName}!
+            </p>
+            <p style="margin: 4px 0 0 0; font-size: 12px; color: #0f766e;">
+              Este é o seu resumo executivo de gestão com os totais apurados no fechamento de <strong>${competenceText}</strong>.
+            </p>
+          </div>
+
+          <!-- Identificação de Destinatário e Remetente -->
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+            <tbody>
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 8px 14px; color: #64748b; font-weight: 600; width: 140px;">Destinatário (Gestão):</td>
+                <td style="padding: 8px 14px; color: #1e293b; font-weight: 600;">${item.recipientName} &lt;${item.to.join(', ')}&gt;</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 14px; color: #64748b; font-weight: 600;">Disparado por:</td>
+                <td style="padding: 8px 14px; color: #1e293b; font-weight: 600;">${callerName}${callerEmail ? ` &lt;${callerEmail}&gt;` : ''}</td>
+              </tr>
+            </tbody>
+          </table>
 
           <table style="width: 100%; border-collapse: collapse; margin: 24px 0; background-color: #f8fafc; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0;">
             <tbody>
@@ -553,7 +579,6 @@ Deno.serve(async (req: Request) => {
         </div>
       `
     }
-
     // 10. Live Resend API delivery
     const deliveryResults: Array<{
       to: string[]

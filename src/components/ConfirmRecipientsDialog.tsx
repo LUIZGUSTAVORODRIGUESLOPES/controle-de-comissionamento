@@ -42,6 +42,7 @@ export interface ConfirmRecipientsDialogProps {
   systemSettings: SystemSettings | null
   currentUserId?: string
   isSending: boolean
+  commissionedUserIds?: string[] | Set<string>
   onConfirmSend: (recipients: ReportRecipientItem[]) => Promise<void>
 }
 
@@ -57,6 +58,7 @@ interface DialogRecipientRow {
   tag: string
   description?: string
   isCustom?: boolean
+  hasCommissionInPeriod?: boolean
 }
 
 export const ConfirmRecipientsDialog: React.FC<ConfirmRecipientsDialogProps> = ({
@@ -67,12 +69,20 @@ export const ConfirmRecipientsDialog: React.FC<ConfirmRecipientsDialogProps> = (
   systemSettings,
   currentUserId,
   isSending,
+  commissionedUserIds,
   onConfirmSend,
 }) => {
   const [rows, setRows] = useState<DialogRecipientRow[]>([])
   const [customEmailInput, setCustomEmailInput] = useState('')
   const [customNameInput, setCustomNameInput] = useState('')
   const [inputError, setInputError] = useState<string | null>(null)
+
+  // Set com os IDs de usuários que possuem comissão no período selecionado
+  const commUserSet = useMemo(() => {
+    if (!commissionedUserIds) return null
+    if (commissionedUserIds instanceof Set) return commissionedUserIds
+    return new Set(commissionedUserIds)
+  }, [commissionedUserIds])
 
   // Inicializar destinatários quando o diálogo abre ou quando a lista de usuários mudar
   useEffect(() => {
@@ -95,9 +105,10 @@ export const ConfirmRecipientsDialog: React.FC<ConfirmRecipientsDialogProps> = (
       const isAdmin = u.role === 'admin'
       const isSalesOrManager = u.role === 'sales' || u.role === 'manager'
 
-      // Regra a: Colaborador sales/manager com auto_send_report_to_self = true -> marcado por padrão
-      // Regra c: Admin logado (ou admin) com auto_send_report_to_self = true -> marcado por padrão
+      // Regra a: Colaborador sales/manager deve ter auto_send_report_to_self = true
+      // E TAMBÉM possuir comissão calculada no período selecionado para ser pré-marcado!
       const autoSendPref = u.auto_send_report_to_self !== false
+      const hasCommission = commUserSet !== null ? commUserSet.has(u.id) : true
 
       let isSelectedByDefault = false
       let tagLabel = 'Colaborador'
@@ -105,17 +116,24 @@ export const ConfirmRecipientsDialog: React.FC<ConfirmRecipientsDialogProps> = (
       let description = 'Extrato individual de comissão'
 
       if (isSalesOrManager) {
-        isSelectedByDefault = autoSendPref
+        // Pré-seleção inteligente: só marca quem TEM comissão no período
+        isSelectedByDefault = autoSendPref && hasCommission
         tagLabel = u.role === 'sales' ? 'Vendedor' : 'Gerente'
         kind = 'self'
-        description = autoSendPref
-          ? 'Preferência ativa: envio automático de extrato'
-          : 'Preferência inativa: desmarcado por padrão'
+
+        if (!hasCommission) {
+          description = autoSendPref
+            ? 'Sem comissão no período (desmarcado por padrão)'
+            : 'Preferência inativa e sem comissão no período'
+        } else {
+          description = autoSendPref
+            ? 'Comissão calculada no período &bull; Envio automático ativo'
+            : 'Comissão calculada no período &bull; Preferência inativa'
+        }
       } else if (isAdmin) {
         kind = 'admin_copy'
         tagLabel = isCurrentUser ? 'Admin (Você - Gestão)' : 'Admin (Gestão)'
-        // Admin logado com auto_send_report_to_self = true marcado por padrão
-        // Outros admins marcados se auto_send_report_to_self = true
+        // Admins recebem o resumo consolidado de gestão independentemente de comissão
         isSelectedByDefault = autoSendPref
         description = 'Cópia de Gestão: resumo executivo consolidado com totais da competência'
       }
@@ -132,6 +150,7 @@ export const ConfirmRecipientsDialog: React.FC<ConfirmRecipientsDialogProps> = (
         tag: tagLabel,
         description,
         isCustom: false,
+        hasCommissionInPeriod: isSalesOrManager ? hasCommission : undefined,
       })
     }
 
@@ -185,7 +204,7 @@ export const ConfirmRecipientsDialog: React.FC<ConfirmRecipientsDialogProps> = (
     setCustomEmailInput('')
     setCustomNameInput('')
     setInputError(null)
-  }, [open, allUsers, systemSettings, currentUserId])
+  }, [open, allUsers, systemSettings, currentUserId, commUserSet])
 
   // Toggle seleção de uma linha
   const handleToggleSelect = (id: string) => {
@@ -370,7 +389,12 @@ export const ConfirmRecipientsDialog: React.FC<ConfirmRecipientsDialogProps> = (
                         {row.isDefault && (
                           <span className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
                             <CheckCircle2 className="h-2.5 w-2.5 text-emerald-600" />
-                            Pré-determinado
+                            Pré-selecionado
+                          </span>
+                        )}
+                        {row.hasCommissionInPeriod === false && (
+                          <span className="text-[10px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 flex items-center gap-1">
+                            Sem comissão no período
                           </span>
                         )}
                       </div>
@@ -379,9 +403,10 @@ export const ConfirmRecipientsDialog: React.FC<ConfirmRecipientsDialogProps> = (
                         {row.description && (
                           <>
                             <span className="text-slate-300">&bull;</span>
-                            <span className="text-[11px] text-slate-400 truncate">
-                              {row.description}
-                            </span>
+                            <span
+                              className="text-[11px] text-slate-400 truncate"
+                              dangerouslySetInnerHTML={{ __html: row.description }}
+                            />
                           </>
                         )}
                       </div>

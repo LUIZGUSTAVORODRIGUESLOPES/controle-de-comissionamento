@@ -2622,6 +2622,14 @@ export default function Reports() {
         systemSettings={companySettings}
         currentUserId={appUser?.id}
         isSending={dispatchingEmail}
+        commissionedUserIds={
+          new Set(
+            commissions
+              .filter((c) => Number(c.commission_amount) > 0 || c.user_id)
+              .map((c) => c.user_id)
+              .filter(Boolean) as string[],
+          )
+        }
         onConfirmSend={handleConfirmSendReports}
       />
     </div>
