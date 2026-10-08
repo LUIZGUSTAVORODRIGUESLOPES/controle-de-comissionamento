@@ -2,9 +2,19 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { corsHeaders } from '../_shared/cors.ts'
 
+export type RecipientKind = 'self' | 'cc_hr' | 'cc_finance' | 'admin_copy' | 'custom'
+
+export interface ExplicitRecipient {
+  user_id?: string
+  email: string
+  name?: string
+  kind: RecipientKind
+}
+
 interface SendReportsRequestBody {
   monthly_run_id?: string
   user_ids?: string[]
+  recipients?: ExplicitRecipient[]
 }
 
 Deno.serve(async (req: Request) => {
@@ -16,14 +26,8 @@ Deno.serve(async (req: Request) => {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')
     const resendApiKey = Deno.env.get('RESEND_API_KEY')
-    // Remetente configurável via Secret do Supabase:
-    // Passo a passo para ativar envio real para terceiros no Resend:
-    // 1. Acesse o painel do Resend (https://resend.com) -> Domains -> "Add Domain" e configure os registros DNS (MX, TXT/SPF, DKIM).
-    // 2. Aguarde a validação do domínio no Resend até o status constar como "Verified".
-    // 3. No painel do Supabase -> Edge Functions -> Secrets, crie o secret `RESEND_FROM_EMAIL` com o endereço verificado (ex: "comissoes@empresa.com.br" ou "financeiro@suaempresa.com").
-    // 4. Não é necessário reimplantar a função após adicionar ou alterar secrets, pois o Deno.env.get é avaliado dinamicamente a cada execução.
-    // 5. Se `RESEND_FROM_EMAIL` não estiver definido, o fallback é "onboarding@resend.dev", que permite envios apenas para o e-mail cadastrado na própria conta do Resend.
     const resendFromEmailEnv = Deno.env.get('RESEND_FROM_EMAIL')?.trim()
     const senderEmail = resendFromEmailEnv || 'onboarding@resend.dev'
 
@@ -38,9 +42,59 @@ Deno.serve(async (req: Request) => {
       )
     }
 
+    // 1. Validação de JWT do chamador (admin ou manager)
+    const authHeader = req.headers.get('Authorization') ?? ''
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Autorização necessária. Cabeçalho de autenticação ausente.',
+        }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    const authVerificationClient = createClient(supabaseUrl, anonKey || supabaseServiceKey, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false, autoRefreshToken: false },
+    })
+
+    const {
+      data: { user: callerAuthUser },
+      error: callerAuthErr,
+    } = await authVerificationClient.auth.getUser()
+
+    if (callerAuthErr || !callerAuthUser) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Sessão do usuário inválida ou expirada. Faça login novamente.',
+        }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    // Service client para operações privilegiadas
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-    // Parse request payload
+    // Checar perfil do chamador
+    const { data: callerProfile } = await supabase
+      .from('users')
+      .select('id, name, email, role')
+      .eq('id', callerAuthUser.id)
+      .maybeSingle()
+
+    if (!callerProfile || (callerProfile.role !== 'admin' && callerProfile.role !== 'manager')) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Acesso negado. Apenas administradores e gestores podem disparar relatórios.',
+        }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    // 2. Parse request payload
     let body: SendReportsRequestBody = {}
     try {
       body = await req.json()
@@ -48,9 +102,9 @@ Deno.serve(async (req: Request) => {
       // Body may be empty
     }
 
-    const { monthly_run_id, user_ids } = body
+    const { monthly_run_id, user_ids, recipients } = body
 
-    // 1. Fetch system_settings (company_name, hr_email, finance_email, logo)
+    // 3. Fetch system_settings (company_name, hr_email, finance_email, logo)
     const { data: settingsData, error: settingsError } = await supabase
       .from('system_settings')
       .select('*')
@@ -65,7 +119,7 @@ Deno.serve(async (req: Request) => {
     const hrEmail = settingsData?.hr_email?.trim() || null
     const financeEmail = settingsData?.finance_email?.trim() || null
 
-    // 2. Fetch monthly run
+    // 4. Fetch monthly run
     let monthlyRun: any = null
     if (monthly_run_id) {
       const { data: runData } = await supabase
@@ -96,35 +150,6 @@ Deno.serve(async (req: Request) => {
       )
     }
 
-    // 3. Fetch target users
-    let usersQuery = supabase.from('users').select('*')
-    if (user_ids && user_ids.length > 0) {
-      usersQuery = usersQuery.in('id', user_ids)
-    } else {
-      // Default: sales & managers
-      usersQuery = usersQuery.in('role', ['sales', 'manager'])
-    }
-
-    const { data: targetUsers, error: usersError } = await usersQuery
-    if (usersError || !targetUsers || targetUsers.length === 0) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'Nenhum colaborador encontrado para receber os relatórios.',
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      )
-    }
-
-    // 4. Fetch commissions and billings for this monthly run
-    const { data: commissionsData } = await supabase
-      .from('commissions')
-      .select('*, billing:billings(*, customer:customers(*))')
-
-    const runCommissions = (commissionsData || []).filter(
-      (c: any) => c.billing?.monthly_run_id === monthlyRun.id,
-    )
-
     // Format competence month display
     const formatCompetence = (dateStr: string) => {
       try {
@@ -154,74 +179,252 @@ Deno.serve(async (req: Request) => {
       return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0)
     }
 
-    // 5. Build dispatch plan
-    const emailDispatchPlan: Array<{
+    // 5. Fetch all users from users table for reference & role lookup
+    const { data: allUsersData, error: allUsersError } = await supabase.from('users').select('*')
+    if (allUsersError || !allUsersData) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Falha ao buscar usuários do sistema.',
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    const usersById = new Map<string, any>()
+    const usersByEmail = new Map<string, any>()
+    for (const u of allUsersData) {
+      if (u.id) usersById.set(u.id, u)
+      if (u.email) usersByEmail.set(u.email.toLowerCase().trim(), u)
+    }
+
+    // 6. Fetch commissions and billings for this monthly run
+    const { data: billingsData } = await supabase
+      .from('billings')
+      .select('*, customer:customers(*)')
+      .eq('monthly_run_id', monthlyRun.id)
+
+    const runBillings = billingsData || []
+    const totalCompanyGross = runBillings.reduce(
+      (acc: number, b: any) => acc + (Number(b.gross_amount) || 0),
+      0,
+    )
+    const totalCompanyNet = runBillings.reduce(
+      (acc: number, b: any) => acc + (Number(b.net_amount) || 0),
+      0,
+    )
+
+    const { data: commissionsData } = await supabase
+      .from('commissions')
+      .select('*, billing:billings(*, customer:customers(*))')
+
+    const runCommissions = (commissionsData || []).filter(
+      (c: any) => c.billing?.monthly_run_id === monthlyRun.id,
+    )
+    const totalCompanyCommissions = runCommissions.reduce(
+      (acc: number, c: any) => acc + (Number(c.commission_amount) || 0),
+      0,
+    )
+
+    // Distinct sellers receiving commissions
+    const distinctSellerIds = new Set(runCommissions.map((c: any) => c.user_id).filter(Boolean))
+
+    // 7. Dispatch plan items
+    interface DispatchItem {
       to: string[]
       cc: string[]
       subject: string
       recipientName: string
-      fixedSalary: number
-      commissionsTotal: number
-      totalPayable: number
-      itemsCount: number
-      userPrefs: {
-        auto_send_to_self: boolean
-        cc_hr: boolean
-        cc_finance: boolean
-      }
-    }> = []
-
-    for (const u of targetUsers) {
-      const userComms = runCommissions.filter((c: any) => c.user_id === u.id)
-      const commTotal = userComms.reduce(
-        (acc: number, c: any) => acc + (Number(c.commission_amount) || 0),
-        0,
-      )
-      const fixed = Number(u.fixed_salary) || 0
-      const totalPay = fixed + commTotal
-
-      const autoSend = u.auto_send_report_to_self !== false // default true
-      const ccHrPref = Boolean(u.cc_hr)
-      const ccFinPref = Boolean(u.cc_finance)
-
-      const toList: string[] = []
-      if (autoSend && u.email) {
-        toList.push(u.email)
-      }
-
-      const ccList: string[] = []
-      if (ccHrPref && hrEmail) {
-        ccList.push(hrEmail)
-      }
-      if (ccFinPref && financeEmail) {
-        ccList.push(financeEmail)
-      }
-
-      // If user opted out of self email but cc is enabled, route to cc
-      if (toList.length === 0 && ccList.length > 0) {
-        toList.push(ccList.shift()!)
-      }
-
-      if (toList.length > 0) {
-        emailDispatchPlan.push({
-          to: toList,
-          cc: ccList,
-          subject: `[${companyName}] Extrato de Comissões - ${competenceText} - ${u.name}`,
-          recipientName: u.name,
-          fixedSalary: fixed,
-          commissionsTotal: commTotal,
-          totalPayable: totalPay,
-          itemsCount: userComms.length,
-          userPrefs: {
-            auto_send_to_self: autoSend,
-            cc_hr: ccHrPref,
-            cc_finance: ccFinPref,
-          },
-        })
+      emailType: 'commission_statement' | 'admin_summary' | 'custom_notification'
+      fixedSalary?: number
+      commissionsTotal?: number
+      totalPayable?: number
+      itemsCount?: number
+      // Admin summary payload
+      summaryData?: {
+        totalGross: number
+        totalNet: number
+        totalCommissions: number
+        totalBillings: number
+        totalCollaborators: number
       }
     }
 
-    // 6. Graceful execution check: Is RESEND_API_KEY configured?
+    const emailDispatchPlan: DispatchItem[] = []
+
+    const hasExplicitRecipients = Array.isArray(recipients) && recipients.length > 0
+
+    if (hasExplicitRecipients) {
+      // -------------------------------------------------------------------------
+      // MODO A: LISTA EXPLÍCITA DE DESTINATÁRIOS (Selecionados no Dialog)
+      // -------------------------------------------------------------------------
+      for (const rec of recipients) {
+        const cleanEmail = rec.email?.trim().toLowerCase()
+        if (!cleanEmail) continue
+
+        const matchedUser =
+          (rec.user_id ? usersById.get(rec.user_id) : null) || usersByEmail.get(cleanEmail)
+
+        const recipientName = rec.name?.trim() || matchedUser?.name || cleanEmail.split('@')[0]
+        const userRole = matchedUser?.role || 'custom'
+
+        // Caso 1: Admin na lista ou kind === 'admin_copy'
+        // -> Cópia de gestão (resumo do período com os totais consolidados e link do sistema)
+        if (userRole === 'admin' || rec.kind === 'admin_copy') {
+          emailDispatchPlan.push({
+            to: [cleanEmail],
+            cc: [],
+            subject: `[${companyName}] Resumo de Gestão - Fechamento ${competenceText}`,
+            recipientName,
+            emailType: 'admin_summary',
+            summaryData: {
+              totalGross: totalCompanyGross,
+              totalNet: totalCompanyNet,
+              totalCommissions: totalCompanyCommissions,
+              totalBillings: runBillings.length,
+              totalCollaborators: distinctSellerIds.size,
+            },
+          })
+          continue
+        }
+
+        // Caso 2: Colaborador comissionado (sales / manager ou kind === 'self')
+        if (userRole === 'sales' || userRole === 'manager' || rec.kind === 'self') {
+          const userComms = runCommissions.filter((c: any) => c.user_id === matchedUser?.id)
+          const commTotal = userComms.reduce(
+            (acc: number, c: any) => acc + (Number(c.commission_amount) || 0),
+            0,
+          )
+          const fixed = Number(matchedUser?.fixed_salary) || 0
+          const totalPay = fixed + commTotal
+
+          emailDispatchPlan.push({
+            to: [cleanEmail],
+            cc: [],
+            subject: `[${companyName}] Extrato de Comissões - ${competenceText} - ${recipientName}`,
+            recipientName,
+            emailType: 'commission_statement',
+            fixedSalary: fixed,
+            commissionsTotal: commTotal,
+            totalPayable: totalPay,
+            itemsCount: userComms.length,
+          })
+          continue
+        }
+
+        // Caso 3: Cópia RH ou Cópia Financeiro (sem user específico ou genérico)
+        if (rec.kind === 'cc_hr' || rec.kind === 'cc_finance') {
+          emailDispatchPlan.push({
+            to: [cleanEmail],
+            cc: [],
+            subject: `[${companyName}] Cópia de Fechamento de Comissões - ${competenceText}`,
+            recipientName,
+            emailType: 'admin_summary',
+            summaryData: {
+              totalGross: totalCompanyGross,
+              totalNet: totalCompanyNet,
+              totalCommissions: totalCompanyCommissions,
+              totalBillings: runBillings.length,
+              totalCollaborators: distinctSellerIds.size,
+            },
+          })
+          continue
+        }
+
+        // Caso 4: Custom / Destinatário Avulso
+        emailDispatchPlan.push({
+          to: [cleanEmail],
+          cc: [],
+          subject: `[${companyName}] Relatório de Comissionamento - ${competenceText}`,
+          recipientName,
+          emailType: 'admin_summary',
+          summaryData: {
+            totalGross: totalCompanyGross,
+            totalNet: totalCompanyNet,
+            totalCommissions: totalCompanyCommissions,
+            totalBillings: runBillings.length,
+            totalCollaborators: distinctSellerIds.size,
+          },
+        })
+      }
+    } else {
+      // -------------------------------------------------------------------------
+      // MODO B: COMPATIBILIDADE / FALLBACK (Derivado das preferências)
+      // -------------------------------------------------------------------------
+      let targetUsers: any[] = []
+      if (user_ids && user_ids.length > 0) {
+        targetUsers = allUsersData.filter((u) => user_ids.includes(u.id))
+      } else {
+        targetUsers = allUsersData.filter((u) => u.role === 'sales' || u.role === 'manager')
+      }
+
+      if (targetUsers.length === 0) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'Nenhum colaborador encontrado para receber os relatórios.',
+          }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+      }
+
+      for (const u of targetUsers) {
+        const userComms = runCommissions.filter((c: any) => c.user_id === u.id)
+        const commTotal = userComms.reduce(
+          (acc: number, c: any) => acc + (Number(c.commission_amount) || 0),
+          0,
+        )
+        const fixed = Number(u.fixed_salary) || 0
+        const totalPay = fixed + commTotal
+
+        const autoSend = u.auto_send_report_to_self !== false
+        const ccHrPref = Boolean(u.cc_hr)
+        const ccFinPref = Boolean(u.cc_finance)
+
+        const toList: string[] = []
+        if (autoSend && u.email) {
+          toList.push(u.email)
+        }
+
+        const ccList: string[] = []
+        if (ccHrPref && hrEmail) {
+          ccList.push(hrEmail)
+        }
+        if (ccFinPref && financeEmail) {
+          ccList.push(financeEmail)
+        }
+
+        if (toList.length === 0 && ccList.length > 0) {
+          toList.push(ccList.shift()!)
+        }
+
+        if (toList.length > 0) {
+          emailDispatchPlan.push({
+            to: toList,
+            cc: ccList,
+            subject: `[${companyName}] Extrato de Comissões - ${competenceText} - ${u.name}`,
+            recipientName: u.name,
+            emailType: 'commission_statement',
+            fixedSalary: fixed,
+            commissionsTotal: commTotal,
+            totalPayable: totalPay,
+            itemsCount: userComms.length,
+          })
+        }
+      }
+    }
+
+    if (emailDispatchPlan.length === 0) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Nenhum destinatário válido selecionado para o envio.',
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    // 8. Graceful execution check: Is RESEND_API_KEY configured?
     if (!resendApiKey) {
       console.warn(
         'RESEND_API_KEY não está configurada no ambiente. Simulação de envio realizada com sucesso.',
@@ -230,23 +433,128 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({
           success: true,
           simulated: true,
-          message: `Modo Simulação: A chave RESEND_API_KEY não foi configurada nos Secrets. O sistema validou as preferências e preparou o disparo para ${emailDispatchPlan.length} colaboradores com sucesso.`,
+          message: `Modo Simulação: A chave RESEND_API_KEY não foi configurada nos Secrets. O sistema validou os destinatários e preparou o disparo para ${emailDispatchPlan.length} endereço(s) com sucesso.`,
           competenceMonth: competenceText,
           dispatchedCount: emailDispatchPlan.length,
+          fromEmail: senderEmail,
           plan: emailDispatchPlan.map((p) => ({
             recipient: p.recipientName,
             to: p.to,
             cc: p.cc,
-            totalPayable: formatCurrency(p.totalPayable),
-            commissions: formatCurrency(p.commissionsTotal),
-            fixed: formatCurrency(p.fixedSalary),
+            emailType: p.emailType,
+            totalPayable: p.totalPayable ? formatCurrency(p.totalPayable) : undefined,
+            commissions: p.commissionsTotal ? formatCurrency(p.commissionsTotal) : undefined,
+            fixed: p.fixedSalary ? formatCurrency(p.fixedSalary) : undefined,
           })),
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       )
     }
 
-    // 7. Live Resend API delivery
+    // 9. Template HTML Generators
+    const generateStatementHtml = (item: DispatchItem) => `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #1e293b; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px;">
+        <div style="border-bottom: 2px solid #0f766e; padding-bottom: 16px; margin-bottom: 20px;">
+          <h2 style="color: #0f766e; margin: 0; font-size: 20px;">${companyName}</h2>
+          <p style="margin: 4px 0 0 0; color: #64748b; font-size: 13px;">Demonstrativo Mensal de Comissionamento B2B</p>
+        </div>
+
+        <p style="font-size: 15px; line-height: 1.5; color: #334155;">
+          Olá, <strong>${item.recipientName}</strong>,
+        </p>
+        <p style="font-size: 14px; line-height: 1.5; color: #475569;">
+          O fechamento de comissões referente a <strong>${competenceText}</strong> foi concluído. Abaixo você confere o resumo da sua apuração:
+        </p>
+
+        <table style="width: 100%; border-collapse: collapse; margin: 24px 0; background-color: #f8fafc; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0;">
+          <tbody>
+            <tr style="border-bottom: 1px solid #e2e8f0;">
+              <td style="padding: 12px 16px; font-size: 13px; color: #64748b; font-weight: 600;">Salário Fixo Mensal</td>
+              <td style="padding: 12px 16px; font-size: 14px; color: #1e293b; font-weight: 700; text-align: right;">${formatCurrency(item.fixedSalary || 0)}</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #e2e8f0;">
+              <td style="padding: 12px 16px; font-size: 13px; color: #64748b; font-weight: 600;">Comissões Ganhas (${item.itemsCount || 0} faturamentos)</td>
+              <td style="padding: 12px 16px; font-size: 14px; color: #0f766e; font-weight: 700; text-align: right;">${formatCurrency(item.commissionsTotal || 0)}</td>
+            </tr>
+            <tr style="background-color: #f0fdfa;">
+              <td style="padding: 14px 16px; font-size: 14px; color: #115e59; font-weight: 700;">Remuneração Total Prevista</td>
+              <td style="padding: 14px 16px; font-size: 17px; color: #0f766e; font-weight: 800; text-align: right;">${formatCurrency(item.totalPayable || 0)}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p style="font-size: 12px; color: #64748b; line-height: 1.5; margin-top: 24px;">
+          Para consultar a relação completa de clientes faturados, alíquotas aplicadas e deduções tributárias detalhadas, acesse o painel de comissões do sistema.
+        </p>
+
+        <div style="margin-top: 28px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
+          Mensagem automática enviada pelo sistema de Comissionamento B2B.
+        </div>
+      </div>
+    `
+
+    const generateAdminSummaryHtml = (item: DispatchItem) => {
+      const sum = item.summaryData || {
+        totalGross: 0,
+        totalNet: 0,
+        totalCommissions: 0,
+        totalBillings: 0,
+        totalCollaborators: 0,
+      }
+      return `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #1e293b; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px;">
+          <div style="border-bottom: 2px solid #0f766e; padding-bottom: 16px; margin-bottom: 20px;">
+            <h2 style="color: #0f766e; margin: 0; font-size: 20px;">${companyName}</h2>
+            <p style="margin: 4px 0 0 0; color: #64748b; font-size: 13px;">Cópia de Gestão & Compliance &bull; Fechamento Mensal</p>
+          </div>
+
+          <p style="font-size: 15px; line-height: 1.5; color: #334155;">
+            Olá, <strong>${item.recipientName}</strong>,
+          </p>
+          <p style="font-size: 14px; line-height: 1.5; color: #475569;">
+            Este é o resumo consolidado de gestão do fechamento de comissões para a competência de <strong>${competenceText}</strong>:
+          </p>
+
+          <table style="width: 100%; border-collapse: collapse; margin: 24px 0; background-color: #f8fafc; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0;">
+            <tbody>
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 12px 16px; font-size: 13px; color: #64748b; font-weight: 600;">Faturamento Bruto da Empresa</td>
+                <td style="padding: 12px 16px; font-size: 14px; color: #1e293b; font-weight: 700; text-align: right;">${formatCurrency(sum.totalGross)}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 12px 16px; font-size: 13px; color: #64748b; font-weight: 600;">Base Líquida Faturada</td>
+                <td style="padding: 12px 16px; font-size: 14px; color: #1e293b; font-weight: 700; text-align: right;">${formatCurrency(sum.totalNet)}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 12px 16px; font-size: 13px; color: #64748b; font-weight: 600;">Faturamentos Processados</td>
+                <td style="padding: 12px 16px; font-size: 14px; color: #1e293b; font-weight: 700; text-align: right;">${sum.totalBillings} notas</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 12px 16px; font-size: 13px; color: #64748b; font-weight: 600;">Colaboradores Comissionados</td>
+                <td style="padding: 12px 16px; font-size: 14px; color: #1e293b; font-weight: 700; text-align: right;">${sum.totalCollaborators} pessoa(s)</td>
+              </tr>
+              <tr style="background-color: #f0fdfa;">
+                <td style="padding: 14px 16px; font-size: 14px; color: #115e59; font-weight: 700;">Total de Comissões Apuradas</td>
+                <td style="padding: 14px 16px; font-size: 17px; color: #0f766e; font-weight: 800; text-align: right;">${formatCurrency(sum.totalCommissions)}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div style="background-color: #f1f5f9; border-radius: 8px; padding: 14px 16px; margin-top: 16px; font-size: 13px; color: #475569;">
+            <p style="margin: 0 0 8px 0; font-weight: 600; color: #0f172a;">Acesso ao Sistema:</p>
+            <p style="margin: 0; line-height: 1.4;">
+              Para visualizar o detalhamento individual de colaboradores, exportar em Excel/PDF ou auditar as deduções fiscais, acesse o painel de relatórios do sistema.
+            </p>
+          </div>
+
+          <div style="margin-top: 28px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
+            Cópia de controle e gestão enviada automaticamente pelo sistema de Comissionamento B2B.
+          </div>
+        </div>
+      `
+    }
+
+    // 10. Live Resend API delivery
     const deliveryResults: Array<{
       to: string[]
       status: 'sent' | 'failed'
@@ -257,11 +565,9 @@ Deno.serve(async (req: Request) => {
 
     const fromAddress = `${companyName} <${senderEmail}>`
 
-    // Helper para mapear erros técnicos do Resend ou do Deno para mensagens amigáveis em pt-BR
     const mapToFriendlyError = (raw: string, statusCode?: number): string => {
       const lower = raw.toLowerCase()
 
-      // 1. Permissão de rede do Deno
       if (
         lower.includes('requires net access') ||
         lower.includes('permissiondenied') ||
@@ -270,19 +576,17 @@ Deno.serve(async (req: Request) => {
         return 'A função não tem permissão de rede para chamar a API do Resend.'
       }
 
-      // 2. Erro de restrição de envio em modo teste / domínio não verificado no Resend
       if (
         statusCode === 403 ||
         lower.includes('you can only send testing emails') ||
         lower.includes('domain not verified') ||
         lower.includes('verify a domain') ||
         lower.includes('only send testing emails to your own email address') ||
-        lower.includes('validation_error') && lower.includes('domain')
+        (lower.includes('validation_error') && lower.includes('domain'))
       ) {
         return 'O Resend bloqueou o envio: o remetente onboarding@resend.dev só permite e-mails de teste para o próprio e-mail da conta Resend. Verifique um domínio no painel do Resend e cadastre o secret RESEND_FROM_EMAIL.'
       }
 
-      // 3. Chave de API inválida ou não autorizada
       if (
         statusCode === 401 ||
         lower.includes('invalid api key') ||
@@ -291,62 +595,23 @@ Deno.serve(async (req: Request) => {
         return 'Chave RESEND_API_KEY inválida ou não autorizada no Resend. Verifique o secret configurado no Supabase.'
       }
 
-      // 4. Rate limit do Resend
       if (statusCode === 429 || lower.includes('rate limit')) {
         return 'Limite de taxa de envio excedido no Resend (rate limit). Aguarde alguns instantes antes de reenviar.'
       }
 
-      // 5. Destinatário inválido ou ausente
       if (lower.includes('invalid recipient') || lower.includes('to parameter')) {
         return 'Endereço de e-mail do destinatário inválido ou ausente.'
       }
 
-      // Fallback genérico
       return `Falha no envio via Resend: ${raw.slice(0, 200)}`
     }
 
     for (const item of emailDispatchPlan) {
       try {
-        const htmlBody = `
-          <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #1e293b; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px;">
-            <div style="border-bottom: 2px solid #0f766e; padding-bottom: 16px; margin-bottom: 20px;">
-              <h2 style="color: #0f766e; margin: 0; font-size: 20px;">${companyName}</h2>
-              <p style="margin: 4px 0 0 0; color: #64748b; font-size: 13px;">Demonstrativo Mensal de Comissionamento B2B</p>
-            </div>
-
-            <p style="font-size: 15px; line-height: 1.5; color: #334155;">
-              Olá, <strong>${item.recipientName}</strong>,
-            </p>
-            <p style="font-size: 14px; line-height: 1.5; color: #475569;">
-              O fechamento de comissões referente a <strong>${competenceText}</strong> foi concluído. Abaixo você confere o resumo da sua apuração:
-            </p>
-
-            <table style="width: 100%; border-collapse: collapse; margin: 24px 0; background-color: #f8fafc; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0;">
-              <tbody>
-                <tr style="border-bottom: 1px solid #e2e8f0;">
-                  <td style="padding: 12px 16px; font-size: 13px; color: #64748b; font-weight: 600;">Salário Fixo Mensal</td>
-                  <td style="padding: 12px 16px; font-size: 14px; color: #1e293b; font-weight: 700; text-align: right;">${formatCurrency(item.fixedSalary)}</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #e2e8f0;">
-                  <td style="padding: 12px 16px; font-size: 13px; color: #64748b; font-weight: 600;">Comissões Ganhas (${item.itemsCount} faturamentos)</td>
-                  <td style="padding: 12px 16px; font-size: 14px; color: #0f766e; font-weight: 700; text-align: right;">${formatCurrency(item.commissionsTotal)}</td>
-                </tr>
-                <tr style="background-color: #f0fdfa;">
-                  <td style="padding: 14px 16px; font-size: 14px; color: #115e59; font-weight: 700;">Remuneração Total Prevista</td>
-                  <td style="padding: 14px 16px; font-size: 17px; color: #0f766e; font-weight: 800; text-align: right;">${formatCurrency(item.totalPayable)}</td>
-                </tr>
-              </tbody>
-            </table>
-
-            <p style="font-size: 12px; color: #64748b; line-height: 1.5; margin-top: 24px;">
-              Para consultar a relação completa de clientes faturados, alíquotas aplicadas e deduções tributárias detalhadas, acesse o painel de comissões do sistema.
-            </p>
-
-            <div style="margin-top: 28px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
-              Mensagem automática enviada conforme preferências de notificação registradas no sistema.
-            </div>
-          </div>
-        `
+        const htmlBody =
+          item.emailType === 'commission_statement'
+            ? generateStatementHtml(item)
+            : generateAdminSummaryHtml(item)
 
         const resendPayload: any = {
           from: fromAddress,
@@ -355,7 +620,7 @@ Deno.serve(async (req: Request) => {
           html: htmlBody,
         }
 
-        if (item.cc.length > 0) {
+        if (item.cc && item.cc.length > 0) {
           resendPayload.cc = item.cc
         }
 
@@ -399,7 +664,6 @@ Deno.serve(async (req: Request) => {
     const sentCount = deliveryResults.filter((d) => d.status === 'sent').length
     const failedDeliveries = deliveryResults.filter((d) => d.status === 'failed')
 
-    // Resumo consolidado de erros para o frontend exibir
     const summarizedErrors = failedDeliveries.map((f) => ({
       recipient: f.to.join(', '),
       message: f.friendlyError || f.error || 'Falha no envio do e-mail.',
@@ -417,7 +681,8 @@ Deno.serve(async (req: Request) => {
         details: deliveryResults,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-    )  } catch (err: any) {
+    )
+  } catch (err: any) {
     console.error('Erro na Edge Function send-reports:', err)
     return new Response(
       JSON.stringify({ success: false, error: err.message || 'Erro interno no servidor.' }),

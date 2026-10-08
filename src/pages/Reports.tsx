@@ -66,7 +66,12 @@ import {
   DetailedRow,
   ExportDataPayload,
 } from '@/lib/exportUtils'
-import { getSystemSettings, sendCommissionReports } from '@/services/commissionService'
+import {
+  getSystemSettings,
+  sendCommissionReports,
+  type ReportRecipientItem,
+} from '@/services/commissionService'
+import { ConfirmRecipientsDialog } from '@/components/ConfirmRecipientsDialog'
 import type { SystemSettings } from '@/types/database'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -169,8 +174,9 @@ export default function Reports() {
   const [runToDelete, setRunToDelete] = useState<MonthlyRun | null>(null)
   const [deletingRun, setDeletingRun] = useState(false)
 
-  // Email dispatching state
+  // Email dispatching state & Recipients Dialog
   const [dispatchingEmail, setDispatchingEmail] = useState(false)
+  const [recipientsDialogOpen, setRecipientsDialogOpen] = useState(false)
   const [exportingType, setExportingType] = useState<'csv' | 'xlsx' | 'pdf' | null>(null)
 
   const isSales = appUser?.role === 'sales'
@@ -935,11 +941,16 @@ export default function Reports() {
     }
   }
 
-  // Trigger Send Reports by Email (calls Edge Function)
-  const handleSendReportsByEmail = async () => {
+  // Abre o diálogo para confirmação e seleção de destinatários
+  const handleOpenRecipientsDialog = () => {
+    setRecipientsDialogOpen(true)
+  }
+
+  // Trigger Send Reports by Email com a lista explícita de destinatários confirmados no Dialog
+  const handleConfirmSendReports = async (recipients: ReportRecipientItem[]) => {
     setDispatchingEmail(true)
     const tId = sonnerToast.loading(
-      'Verificando preferências de colaboradores e disparando extratos por e-mail...',
+      `Disparando relatórios para ${recipients.length} destinatário(s) selecionado(s)...`,
     )
     try {
       const targetUserIdsParam =
@@ -949,7 +960,11 @@ export default function Reports() {
       const result = await sendCommissionReports({
         monthlyRunId: targetRunIdParam,
         userIds: targetUserIdsParam,
+        recipients,
       })
+
+      // Fecha o diálogo após a execução
+      setRecipientsDialogOpen(false)
 
       if (result.simulated) {
         sonnerToast.info('Disparo Simulado com Sucesso', {
@@ -961,7 +976,7 @@ export default function Reports() {
       }
 
       const sentCount = result.dispatchedCount ?? 0
-      const totalCount = result.details?.length ?? 0
+      const totalCount = result.details?.length ?? recipients.length
       const firstError = result.errors?.[0]
       const friendlyErrorMessage =
         firstError?.message ||
@@ -1090,14 +1105,14 @@ export default function Reports() {
 
           {/* Action buttons (Disparar E-mails / Exportar Dropdown / Recalcular / Fechar Mês / Print) */}
           <div className="flex flex-wrap items-center gap-2.5">
-            {/* Disparar Relatórios por E-mail */}
+            {/* Disparar Relatórios por E-mail (Abre Diálogo de Confirmação de Destinatários) */}
             {!isSales && (
               <Button
-                onClick={handleSendReportsByEmail}
+                onClick={handleOpenRecipientsDialog}
                 disabled={dispatchingEmail}
                 variant="outline"
                 className="border-teal-600 text-[#0F766E] hover:bg-teal-50 font-semibold flex items-center gap-2 h-10 px-4 shadow-xs"
-                title="Envia extratos por e-mail aos colaboradores conforme preferências cadastradas"
+                title="Abre diálogo para confirmar e selecionar destinatários do envio"
               >
                 {dispatchingEmail ? (
                   <Loader2 className="h-4 w-4 animate-spin text-[#0F766E]" />
@@ -2593,6 +2608,22 @@ export default function Reports() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* MODAL: Confirmação e Seleção de Destinatários do Envio de Relatórios */}
+      <ConfirmRecipientsDialog
+        open={recipientsDialogOpen}
+        onOpenChange={setRecipientsDialogOpen}
+        competenceMonthText={
+          viewMode === 'month'
+            ? formatMonth(selectedRun?.month_year)
+            : `${formatDateDisplay(periodStartDate)} até ${formatDateDisplay(periodEndDate)}`
+        }
+        allUsers={allUsers}
+        systemSettings={companySettings}
+        currentUserId={appUser?.id}
+        isSending={dispatchingEmail}
+        onConfirmSend={handleConfirmSendReports}
+      />
     </div>
   )
 }

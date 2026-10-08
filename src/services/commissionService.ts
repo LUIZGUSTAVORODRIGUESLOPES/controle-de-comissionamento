@@ -1083,6 +1083,15 @@ export interface SendCommissionReportsDetail {
   error?: string
 }
 
+export type ReportRecipientKind = 'self' | 'cc_hr' | 'cc_finance' | 'admin_copy' | 'custom'
+
+export interface ReportRecipientItem {
+  user_id?: string
+  email: string
+  name?: string
+  kind: ReportRecipientKind
+}
+
 export interface SendCommissionReportsResponse {
   success: boolean
   simulated?: boolean
@@ -1098,11 +1107,13 @@ export interface SendCommissionReportsResponse {
 export async function sendCommissionReports(params: {
   monthlyRunId?: string
   userIds?: string[]
+  recipients?: ReportRecipientItem[]
 }): Promise<SendCommissionReportsResponse> {
   const { data, error } = await supabase.functions.invoke('send-reports', {
     body: {
       monthly_run_id: params.monthlyRunId,
       user_ids: params.userIds,
+      recipients: params.recipients,
     },
   })
 
