@@ -72,6 +72,7 @@ import {
   type ReportRecipientItem,
 } from '@/services/commissionService'
 import { ConfirmRecipientsDialog } from '@/components/ConfirmRecipientsDialog'
+import { ConfirmSendDialog } from '@/components/ConfirmSendDialog'
 import type { SystemSettings } from '@/types/database'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -174,9 +175,11 @@ export default function Reports() {
   const [runToDelete, setRunToDelete] = useState<MonthlyRun | null>(null)
   const [deletingRun, setDeletingRun] = useState(false)
 
-  // Email dispatching state & Recipients Dialog
+  // Email dispatching state & Recipients Dialog + Second Confirmation Dialog
   const [dispatchingEmail, setDispatchingEmail] = useState(false)
   const [recipientsDialogOpen, setRecipientsDialogOpen] = useState(false)
+  const [confirmSendDialogOpen, setConfirmSendDialogOpen] = useState(false)
+  const [pendingRecipients, setPendingRecipients] = useState<ReportRecipientItem[]>([])
   const [exportingType, setExportingType] = useState<'csv' | 'xlsx' | 'pdf' | null>(null)
 
   const isSales = appUser?.role === 'sales'
@@ -949,8 +952,75 @@ export default function Reports() {
     setRecipientsDialogOpen(true)
   }
 
-  // Trigger Send Reports by Email com a lista explícita de destinatários confirmados no Dialog
-  const handleConfirmSendReports = async (recipients: ReportRecipientItem[]) => {
+  // Passo 1 -> Passo 2: Ao confirmar destinatários no primeiro diálogo,
+  // guarda a seleção e abre o segundo modal de confirmação final
+  const handleProceedToFinalConfirm = async (recipients: ReportRecipientItem[]) => {
+    setPendingRecipients(recipients)
+    setRecipientsDialogOpen(false)
+    setConfirmSendDialogOpen(true)
+  }
+
+  // Cancelar na confirmação final: fecha a confirmação final e reabre o diálogo de seleção
+  // mantendo a lista de destinatários intacta
+  const handleBackToRecipients = () => {
+    setConfirmSendDialogOpen(false)
+    setRecipientsDialogOpen(true)
+  }
+
+  // Nomes dos vendedores/colaboradores que constam no relatório atual
+  const reportCommissionedUserNames = useMemo(() => {
+    // 1. Se há filtro nominal de 1 vendedor
+    if (activeSelectedUserIds.length === 1 && activeSellerUser) {
+      return [activeSellerUser.name]
+    }
+    // 2. Colaboradores comissionados presentes no resumo da apuração (usersWithCommissions)
+    const fromSummary = usersWithCommissions.map((r) => r.user.name).filter(Boolean)
+    if (fromSummary.length > 0) {
+      return Array.from(new Set(fromSummary))
+    }
+    // 3. Fallback: extrair vendedores das comissões exibidas
+    const fromComms = displayedCommissions
+      .map((c) => allUsers.find((u) => u.id === c.user_id)?.name)
+      .filter(Boolean) as string[]
+    if (fromComms.length > 0) {
+      return Array.from(new Set(fromComms))
+    }
+    // 4. Fallback final: vendedores filtrados
+    if (activeSelectedUserIds.length > 0) {
+      return allUsers.filter((u) => activeSelectedUserIds.includes(u.id)).map((u) => u.name)
+    }
+    return []
+  }, [
+    activeSelectedUserIds,
+    activeSellerUser,
+    usersWithCommissions,
+    displayedCommissions,
+    allUsers,
+  ])
+
+  // Rótulo nominal do filtro de vendedores
+  const reportFilteredUserLabel = useMemo(() => {
+    if (activeSelectedUserIds.length === 0) return 'Todos os vendedores'
+    if (activeSelectedUserIds.length === 1) {
+      return activeSellerUser?.name || 'Vendedor selecionado'
+    }
+    const filteredSellers = allUsers.filter((u) => activeSelectedUserIds.includes(u.id))
+    const names = filteredSellers.map((s) => s.name)
+    return `${names.join(', ')} (${names.length} selecionados)`
+  }, [activeSelectedUserIds, activeSellerUser, allUsers])
+
+  // Texto amigável da competência / período
+  const currentPeriodText = useMemo(() => {
+    return viewMode === 'month'
+      ? formatMonth(selectedRun?.month_year)
+      : `${formatDateDisplay(periodStartDate)} até ${formatDateDisplay(periodEndDate)}`
+  }, [viewMode, selectedRun?.month_year, periodStartDate, periodEndDate])
+
+  // Passo 2 -> Envio efetivo acionado pelo botão "Enviar" do ConfirmSendDialog
+  const handleExecuteSendReports = async () => {
+    const recipients = pendingRecipients
+    if (recipients.length === 0 || dispatchingEmail) return
+
     setDispatchingEmail(true)
     const tId = sonnerToast.loading(
       `Disparando relatórios para ${recipients.length} destinatário(s) selecionado(s)...`,
@@ -963,17 +1033,8 @@ export default function Reports() {
       // Montar nomes e label dos vendedores filtrados para exibição explícita no relatório
       const filteredSellers = allUsers.filter((u) => activeSelectedUserIds.includes(u.id))
       const filteredUserNames = filteredSellers.map((s) => s.name)
-      const filteredUserLabel =
-        activeSelectedUserIds.length === 0
-          ? 'Todos os vendedores'
-          : activeSelectedUserIds.length === 1
-            ? activeSellerUser?.name || filteredUserNames[0] || 'Vendedor selecionado'
-            : `${filteredUserNames.join(', ')} (${filteredUserNames.length} selecionados)`
-
-      const periodTitle =
-        viewMode === 'month'
-          ? formatMonth(selectedRun?.month_year)
-          : `${formatDateDisplay(periodStartDate)} até ${formatDateDisplay(periodEndDate)}`
+      const filteredUserLabel = reportFilteredUserLabel
+      const periodTitle = currentPeriodText
 
       // Converter summaryViewRows para payload de envio
       const summaryPayload = usersWithCommissions.map((row) => ({
@@ -1050,7 +1111,8 @@ export default function Reports() {
         },
       })
 
-      // Fecha o diálogo após a execução
+      // Fecha ambos os diálogos após a execução bem-sucedida ou finalizada
+      setConfirmSendDialogOpen(false)
       setRecipientsDialogOpen(false)
 
       if (result.simulated) {
@@ -2696,7 +2758,7 @@ export default function Reports() {
         </DialogContent>
       </Dialog>
 
-      {/* MODAL: Confirmação e Seleção de Destinatários do Envio de Relatórios */}
+      {/* MODAL 1: Confirmação e Seleção de Destinatários do Envio de Relatórios */}
       <ConfirmRecipientsDialog
         open={recipientsDialogOpen}
         onOpenChange={setRecipientsDialogOpen}
@@ -2717,7 +2779,23 @@ export default function Reports() {
               .filter(Boolean) as string[],
           )
         }
-        onConfirmSend={handleConfirmSendReports}
+        onConfirmSend={handleProceedToFinalConfirm}
+      />
+
+      {/* MODAL 2: Confirmação Final do Envio com Resumo das Configurações */}
+      <ConfirmSendDialog
+        open={confirmSendDialogOpen}
+        onOpenChange={setConfirmSendDialogOpen}
+        onBackToRecipients={handleBackToRecipients}
+        onConfirmSend={handleExecuteSendReports}
+        isSending={dispatchingEmail}
+        commissionedUsersList={reportCommissionedUserNames}
+        filteredUserLabel={reportFilteredUserLabel}
+        isSingleSeller={activeSelectedUserIds.length === 1}
+        periodText={currentPeriodText}
+        viewType={reportViewType}
+        originFilter={originFilter}
+        recipients={pendingRecipients}
       />
     </div>
   )

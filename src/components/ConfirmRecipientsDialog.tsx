@@ -266,7 +266,7 @@ export const ConfirmRecipientsDialog: React.FC<ConfirmRecipientsDialogProps> = (
   const selectedRows = useMemo(() => rows.filter((r) => r.selected), [rows])
   const selectedCount = selectedRows.length
 
-  const handleConfirm = async () => {
+  const handleConfirm = () => {
     if (selectedCount === 0 || isSending) return
 
     const payloadRecipients: ReportRecipientItem[] = selectedRows.map((r) => ({
@@ -276,7 +276,7 @@ export const ConfirmRecipientsDialog: React.FC<ConfirmRecipientsDialogProps> = (
       kind: r.kind,
     }))
 
-    await onConfirmSend(payloadRecipients)
+    void onConfirmSend(payloadRecipients)
   }
 
   return (
