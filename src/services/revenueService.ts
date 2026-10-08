@@ -56,19 +56,20 @@ export async function getRevenueMonthlyRuns(): Promise<RevenueMonthlyRunOption[]
  * Fetches all customers for the filter dropdown
  */
 export async function getRevenueCustomers(): Promise<RevenueCustomerOption[]> {
+  // Retorna clientes ativos para o filtro do Dashboard de Receita, mas sem apagar histórico de faturamentos passados
   const { data, error } = await db
     .from('customers')
-    .select('id, name, customer_code, origin')
+    .select('id, name, customer_code')
+    .eq('is_active', true)
     .order('name', { ascending: true })
 
   if (error) {
-    console.error('Erro ao buscar clientes para Revenue BI:', error)
-    throw error
+    console.error('Error fetching revenue customers:', error)
+    return []
   }
 
-  return (data as RevenueCustomerOption[]) || []
+  return (data || []) as RevenueCustomerOption[]
 }
-
 /**
  * Fetches all billings joined with monthly_runs and customers
  */

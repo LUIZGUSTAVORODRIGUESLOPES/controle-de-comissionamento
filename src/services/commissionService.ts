@@ -154,8 +154,15 @@ export async function deleteMonthlyRun(
 // Customers & Linking
 // ==========================================
 
-export async function getCustomers(searchQuery?: string): Promise<Customer[]> {
+export async function getCustomers(
+  searchQuery?: string,
+  includeInactive: boolean = false,
+): Promise<Customer[]> {
   let query = db.from('customers').select('*, customer_users(*, user:users(*))').order('name')
+
+  if (!includeInactive) {
+    query = query.eq('is_active', true)
+  }
 
   if (searchQuery && searchQuery.trim().length > 0) {
     const term = searchQuery.trim()
@@ -167,6 +174,11 @@ export async function getCustomers(searchQuery?: string): Promise<Customer[]> {
 
   if (error) throw error
   return (data as unknown as Customer[]) || []
+}
+
+export async function softDeleteCustomer(id: string): Promise<void> {
+  const { error } = await db.from('customers').update({ is_active: false }).eq('id', id)
+  if (error) throw error
 }
 
 export async function getCustomerById(id: string): Promise<Customer | null> {
@@ -200,12 +212,16 @@ export async function updateCustomer(
   return data as unknown as Customer
 }
 
-export async function listEligibleCommissionUsers(): Promise<AppUser[]> {
-  const { data, error } = await db
-    .from('users')
-    .select('*')
-    .in('role', ['manager', 'sales'])
-    .order('name')
+export async function listEligibleCommissionUsers(
+  includeInactive: boolean = false,
+): Promise<AppUser[]> {
+  let query = db.from('users').select('*').in('role', ['manager', 'sales']).order('name')
+
+  if (!includeInactive) {
+    query = query.eq('is_active', true)
+  }
+
+  const { data, error } = await query
 
   if (error) throw error
   return (data as unknown as AppUser[]) || []
@@ -779,8 +795,14 @@ export async function getCommissionsForRuns(monthlyRunIds: string[]): Promise<Co
 // Settings: Users, Profiles, Taxes
 // ==========================================
 
-export async function getAllUsers(): Promise<AppUser[]> {
-  const { data, error } = await db.from('users').select('*').order('name')
+export async function getAllUsers(includeInactive: boolean = false): Promise<AppUser[]> {
+  let query = db.from('users').select('*').order('name')
+
+  if (!includeInactive) {
+    query = query.eq('is_active', true)
+  }
+
+  const { data, error } = await query
 
   if (error) throw error
   return (data as unknown as AppUser[]) || []
@@ -791,7 +813,13 @@ export async function updateUser(
   updates: Partial<
     Pick<
       AppUser,
-      'name' | 'role' | 'fixed_salary' | 'auto_send_report_to_self' | 'cc_hr' | 'cc_finance'
+      | 'name'
+      | 'role'
+      | 'fixed_salary'
+      | 'auto_send_report_to_self'
+      | 'cc_hr'
+      | 'cc_finance'
+      | 'is_active'
     >
   >,
 ): Promise<AppUser> {
@@ -827,7 +855,13 @@ export async function updateUser(
 }
 
 export async function deleteUser(id: string): Promise<void> {
-  const { error } = await db.from('users').delete().eq('id', id)
+  // Soft delete: atualiza is_active = false para proteger histórico financeiro
+  const { error } = await db.from('users').update({ is_active: false }).eq('id', id)
+  if (error) throw error
+}
+
+export async function softDeleteUser(id: string): Promise<void> {
+  const { error } = await db.from('users').update({ is_active: false }).eq('id', id)
   if (error) throw error
 }
 

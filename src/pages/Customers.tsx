@@ -3,6 +3,7 @@ import {
   getCustomers,
   getCustomerById,
   updateCustomer,
+  softDeleteCustomer,
   listEligibleCommissionUsers,
   addUserToCustomer,
   removeUserFromCustomer,
@@ -103,6 +104,10 @@ export default function Customers() {
   // Safety confirmation dialog state for clients with no_commission_flag = true
   const [confirmSafetyOpen, setConfirmSafetyOpen] = useState(false)
   const [noCommCustomersCount, setNoCommCustomersCount] = useState(0)
+
+  // Soft delete / Inactivation dialog state
+  const [customerToDeactivate, setCustomerToDeactivate] = useState<Customer | null>(null)
+  const [deactivatingCustomer, setDeactivatingCustomer] = useState(false)
 
   // Details & Edit Sheet State
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -367,6 +372,32 @@ export default function Customers() {
   }
 
   // Open Customer Details
+  const handleConfirmDeactivate = async () => {
+    if (!customerToDeactivate) return
+    setDeactivatingCustomer(true)
+    try {
+      await softDeleteCustomer(customerToDeactivate.id)
+      toast({
+        title: 'Cliente inativado',
+        description: `O cliente "${customerToDeactivate.name}" foi inativado com sucesso. O histórico financeiro e comissões passadas permanecem protegidos.`,
+      })
+      if (selectedCustomer?.id === customerToDeactivate.id) {
+        setSheetOpen(false)
+        setSelectedCustomer(null)
+      }
+      setCustomerToDeactivate(null)
+      await loadCustomers()
+    } catch (err: any) {
+      toast({
+        title: 'Erro ao inativar cliente',
+        description: err.message || 'Falha ao inativar o cliente.',
+        variant: 'destructive',
+      })
+    } finally {
+      setDeactivatingCustomer(false)
+    }
+  }
+
   const handleOpenCustomer = async (cust: Customer) => {
     setSelectedCustomer(cust)
     setFormName(cust.name || '')
@@ -855,14 +886,27 @@ export default function Customers() {
                             </Badge>
                           )}
                         </TableCell>
-                        <TableCell className="text-right" onClick={() => handleOpenCustomer(cust)}>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0 text-slate-400 group-hover:text-[#0F766E]"
-                          >
-                            <ExternalLink className="h-4 w-4" />
-                          </Button>
+                        <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleOpenCustomer(cust)}
+                              className="h-8 w-8 p-0 text-slate-400 hover:text-[#0F766E]"
+                              title="Ver detalhes do cliente"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setCustomerToDeactivate(cust)}
+                              className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                              title="Inativar cliente (Soft Delete)"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     )
@@ -1020,8 +1064,22 @@ export default function Customers() {
               />
             </div>
 
-            {/* Botão Salvar Dados Básicos */}
-            <div className="pt-2 flex justify-end">
+            {/* Botões Salvar e Inativar Cliente */}
+            <div className="pt-2 flex items-center justify-between gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (selectedCustomer) {
+                    setCustomerToDeactivate(selectedCustomer)
+                  }
+                }}
+                className="border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700 text-xs h-9 px-3 gap-1.5"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Inativar Cliente</span>
+              </Button>
               <Button
                 onClick={handleSaveChanges}
                 disabled={savingChanges}
@@ -1671,6 +1729,54 @@ export default function Customers() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ALERT DIALOG: CONFIRMAÇÃO DE INATIVAÇÃO DE CLIENTE (SOFT DELETE) */}
+      <AlertDialog
+        open={!!customerToDeactivate}
+        onOpenChange={(open) => {
+          if (!open) setCustomerToDeactivate(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-rose-600">
+              <AlertCircle className="h-5 w-5" />
+              Inativar Cliente
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-sm text-slate-700 pt-2 leading-relaxed">
+              Tem certeza que deseja inativar o cliente{' '}
+              <strong className="text-slate-900 font-semibold">
+                "{customerToDeactivate?.name}"
+              </strong>{' '}
+              ({customerToDeactivate?.customer_code})?
+              <br />
+              <br />
+              <span className="block text-xs text-slate-500 bg-slate-50 p-2.5 rounded border border-slate-200">
+                🛡️ <strong>Proteção de Histórico:</strong> Este cliente será desativado e removido
+                das seleções e listas ativas, mas todos os registros de faturamentos, comissões
+                pagas e relatórios passados permanecem 100% preservados no banco de dados.
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deactivatingCustomer}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deactivatingCustomer}
+              onClick={handleConfirmDeactivate}
+              className="bg-rose-600 hover:bg-rose-700 text-white font-medium"
+            >
+              {deactivatingCustomer ? (
+                <>
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" />
+                  Inativando...
+                </>
+              ) : (
+                'Sim, inativar cliente'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ALERT DIALOG: TRAVA DE CONFIRMAÇÃO PARA CLIENTES "SEM COMISSÃO" */}
       <AlertDialog open={confirmSafetyOpen} onOpenChange={setConfirmSafetyOpen}>

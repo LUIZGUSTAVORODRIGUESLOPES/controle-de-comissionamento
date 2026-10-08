@@ -285,15 +285,15 @@ export default function Settings() {
     try {
       await deleteUser(userToDelete.id)
       toast({
-        title: 'Utilizador Removido',
-        description: `O utilizador "${userToDelete.name}" foi excluído.`,
+        title: 'Utilizador Inativado',
+        description: `O utilizador "${userToDelete.name}" foi inativado com sucesso. O histórico financeiro e relatórios passados permanecem protegidos.`,
       })
       setDeleteUserDialogOpen(false)
       await loadData()
     } catch (err: any) {
       toast({
-        title: 'Erro ao excluir',
-        description: err.message,
+        title: 'Erro ao inativar utilizador',
+        description: err.message || 'Falha ao inativar utilizador.',
         variant: 'destructive',
       })
     }
@@ -1197,24 +1197,38 @@ export default function Settings() {
         onSuccess={loadData}
       />
 
-      {/* CONFIRM DELETE USER */}
+      {/* CONFIRM DELETE USER (SOFT DELETE) */}
       <AlertDialog open={deleteUserDialogOpen} onOpenChange={setDeleteUserDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Excluir este utilizador?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Você está prestes a remover{' '}
-              <strong className="text-slate-900">{userToDelete?.name}</strong>. Esta ação não poderá
-              ser desfeita.
+            <AlertDialogTitle className="flex items-center gap-2 text-rose-600">
+              <AlertCircle className="h-5 w-5" />
+              Inativar Utilizador?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2 text-sm text-slate-700 pt-2 leading-relaxed">
+              <p>
+                Você está prestes a inativar o utilizador{' '}
+                <strong className="text-slate-900">{userToDelete?.name}</strong>.
+              </p>
+              <div className="text-xs text-slate-500 bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-1">
+                <p className="font-semibold text-slate-800 flex items-center gap-1.5">
+                  🛡️ Proteção de Histórico Financeiro
+                </p>
+                <p>
+                  O utilizador não terá seus dados apagados fisicamente. Ele deixará de aparecer em
+                  novos cadastros, vínculos e seleções comerciais, mas todas as comissões apuradas,
+                  recibos emitidos e relatórios passados continuarão 100% íntegros.
+                </p>
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDeleteUser}
-              className="bg-rose-600 hover:bg-rose-700 text-white"
+              className="bg-rose-600 hover:bg-rose-700 text-white font-medium"
             >
-              Sim, excluir
+              Sim, inativar utilizador
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

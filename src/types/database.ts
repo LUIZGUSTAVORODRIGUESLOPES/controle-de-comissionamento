@@ -13,6 +13,7 @@ export interface AppUser {
   cc_hr?: boolean
   cc_finance?: boolean
   must_change_password?: boolean | null
+  is_active?: boolean
   created_at?: string
 }
 
@@ -43,13 +44,13 @@ export interface Customer {
   id: string
   customer_code: string
   name: string
-  origin: CustomerOrigin | null
-  start_date: string | null
+  origin: CustomerOrigin
+  start_date: string
   no_commission_flag: boolean
-  created_at?: string
+  is_active: boolean
+  created_at: string
   customer_users?: CustomerUserLink[]
 }
-
 export interface CustomerUserLink {
   id: string
   customer_id: string
