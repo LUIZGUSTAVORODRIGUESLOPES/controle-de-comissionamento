@@ -957,10 +957,94 @@ export default function Reports() {
         activeSelectedUserIds.length > 0 ? activeSelectedUserIds : undefined
       const targetRunIdParam = viewMode === 'month' ? selectedRunId : undefined
 
+      // Montar nomes e label dos vendedores filtrados para exibição explícita no relatório
+      const filteredSellers = allUsers.filter((u) => activeSelectedUserIds.includes(u.id))
+      const filteredUserNames = filteredSellers.map((s) => s.name)
+      const filteredUserLabel =
+        activeSelectedUserIds.length === 0
+          ? 'Todos os vendedores'
+          : activeSelectedUserIds.length === 1
+            ? activeSellerUser?.name || filteredUserNames[0] || 'Vendedor selecionado'
+            : `${filteredUserNames.join(', ')} (${filteredUserNames.length} selecionados)`
+
+      const periodTitle =
+        viewMode === 'month'
+          ? formatMonth(selectedRun?.month_year)
+          : `${formatDateDisplay(periodStartDate)} até ${formatDateDisplay(periodEndDate)}`
+
+      // Converter summaryViewRows para payload de envio
+      const summaryPayload = usersWithCommissions.map((row) => ({
+        userId: row.user.id,
+        sellerName: row.user.name,
+        role: row.user.role,
+        grossTotal: row.grossTotal,
+        netTotal: row.netTotal,
+        commissionTotal: row.commissionsTotal,
+        fixedSalary: row.fixedSalary,
+        totalPayable: row.totalPayable,
+        itemsCount: row.commissionsList.length,
+      }))
+
+      // Converter detailedViewRows para payload de envio
+      const detailedPayload = displayedCommissions.map((c) => {
+        const bill = c.billing
+        const cust = bill?.customer
+        const seller = allUsers.find((u) => u.id === c.user_id)
+        const run = runByIdMap.get(bill?.monthly_run_id || '')
+        const gross = Number(bill?.gross_amount) || 0
+        const net = Number(bill?.net_amount) || 0
+        const taxesDeducted = Math.max(0, gross - net)
+        const appliedTaxes = (bill?.tax_deductions_applied_json || []) as any[]
+        const taxDetailsStr =
+          appliedTaxes.length > 0
+            ? appliedTaxes
+                .map((t) => `${t.name}: ${formatBRL(Number(t.deducted) || 0)}`)
+                .join(' | ')
+            : 'Sem deduções'
+
+        return {
+          userId: c.user_id,
+          sellerName: seller?.name || 'Vendedor',
+          competenceMonth: formatMonth(run?.month_year),
+          customerCode: cust?.customer_code || '-',
+          customerName: cust?.name || 'Cliente sem nome',
+          origin: cust?.origin || 'outbound',
+          grossAmount: gross,
+          taxesDeducted,
+          taxDetails: taxDetailsStr,
+          netAmount: net,
+          commissionPct: Number(c.percentage_applied) || 0,
+          commissionAmount: Number(c.commission_amount) || 0,
+        }
+      })
+
       const result = await sendCommissionReports({
         monthlyRunId: targetRunIdParam,
         userIds: targetUserIdsParam,
         recipients,
+        viewType: reportViewType,
+        filters: {
+          viewType: reportViewType,
+          periodTitle,
+          originFilter,
+          selectedUserIds: activeSelectedUserIds,
+          filteredUserNames,
+          filteredUserLabel,
+          timeMode: viewMode,
+          periodStartDate,
+          periodEndDate,
+        },
+        summaryRows: summaryPayload,
+        detailedRows: detailedPayload,
+        totals: {
+          gross: companyGross,
+          net: companyNet,
+          taxes: companyTaxes,
+          commissions: companyTotalCommissions,
+          fixed: companyTotalFixed,
+          grandTotal: companyGrandTotal,
+          billingsCount: displayedBillings.length,
+        },
       })
 
       // Fecha o diálogo após a execução

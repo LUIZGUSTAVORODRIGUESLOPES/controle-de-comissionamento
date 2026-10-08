@@ -1092,6 +1092,64 @@ export interface ReportRecipientItem {
   kind: ReportRecipientKind
 }
 
+export interface SendReportSummaryRowPayload {
+  userId?: string
+  sellerName: string
+  role: string
+  grossTotal: number
+  netTotal: number
+  commissionTotal: number
+  fixedSalary: number
+  totalPayable: number
+  itemsCount?: number
+}
+
+export interface SendReportDetailedRowPayload {
+  userId?: string
+  sellerName: string
+  competenceMonth: string
+  customerCode: string
+  customerName: string
+  origin: string
+  grossAmount: number
+  taxesDeducted: number
+  taxDetails?: string
+  netAmount: number
+  commissionPct: number
+  commissionAmount: number
+}
+
+export interface SendReportFiltersPayload {
+  viewType: 'summary' | 'detailed'
+  periodTitle: string
+  originFilter?: string
+  selectedUserIds?: string[]
+  filteredUserNames?: string[]
+  filteredUserLabel?: string
+  timeMode?: 'month' | 'period'
+  periodStartDate?: string
+  periodEndDate?: string
+}
+
+export interface SendCommissionReportsPayload {
+  monthlyRunId?: string
+  userIds?: string[]
+  recipients?: ReportRecipientItem[]
+  viewType?: 'summary' | 'detailed'
+  filters?: SendReportFiltersPayload
+  summaryRows?: SendReportSummaryRowPayload[]
+  detailedRows?: SendReportDetailedRowPayload[]
+  totals?: {
+    gross: number
+    net: number
+    taxes: number
+    commissions: number
+    fixed: number
+    grandTotal: number
+    billingsCount?: number
+  }
+}
+
 export interface SendCommissionReportsResponse {
   success: boolean
   simulated?: boolean
@@ -1104,16 +1162,19 @@ export interface SendCommissionReportsResponse {
   plan?: any[]
 }
 
-export async function sendCommissionReports(params: {
-  monthlyRunId?: string
-  userIds?: string[]
-  recipients?: ReportRecipientItem[]
-}): Promise<SendCommissionReportsResponse> {
+export async function sendCommissionReports(
+  params: SendCommissionReportsPayload,
+): Promise<SendCommissionReportsResponse> {
   const { data, error } = await supabase.functions.invoke('send-reports', {
     body: {
       monthly_run_id: params.monthlyRunId,
       user_ids: params.userIds,
       recipients: params.recipients,
+      viewType: params.viewType,
+      filters: params.filters,
+      summaryRows: params.summaryRows,
+      detailedRows: params.detailedRows,
+      totals: params.totals,
     },
   })
 
