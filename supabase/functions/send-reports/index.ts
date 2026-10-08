@@ -17,6 +17,15 @@ Deno.serve(async (req: Request) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
     const resendApiKey = Deno.env.get('RESEND_API_KEY')
+    // Remetente configurável via Secret do Supabase:
+    // Passo a passo para ativar envio real para terceiros no Resend:
+    // 1. Acesse o painel do Resend (https://resend.com) -> Domains -> "Add Domain" e configure os registros DNS (MX, TXT/SPF, DKIM).
+    // 2. Aguarde a validação do domínio no Resend até o status constar como "Verified".
+    // 3. No painel do Supabase -> Edge Functions -> Secrets, crie o secret `RESEND_FROM_EMAIL` com o endereço verificado (ex: "comissoes@empresa.com.br" ou "financeiro@suaempresa.com").
+    // 4. Não é necessário reimplantar a função após adicionar ou alterar secrets, pois o Deno.env.get é avaliado dinamicamente a cada execução.
+    // 5. Se `RESEND_FROM_EMAIL` não estiver definido, o fallback é "onboarding@resend.dev", que permite envios apenas para o e-mail cadastrado na própria conta do Resend.
+    const resendFromEmailEnv = Deno.env.get('RESEND_FROM_EMAIL')?.trim()
+    const senderEmail = resendFromEmailEnv || 'onboarding@resend.dev'
 
     if (!supabaseUrl || !supabaseServiceKey) {
       return new Response(
@@ -238,7 +247,63 @@ Deno.serve(async (req: Request) => {
     }
 
     // 7. Live Resend API delivery
-    const deliveryResults: Array<{ to: string[]; status: 'sent' | 'failed'; error?: string }> = []
+    const deliveryResults: Array<{
+      to: string[]
+      status: 'sent' | 'failed'
+      friendlyError?: string
+      rawError?: string
+      error?: string
+    }> = []
+
+    const fromAddress = `${companyName} <${senderEmail}>`
+
+    // Helper para mapear erros técnicos do Resend ou do Deno para mensagens amigáveis em pt-BR
+    const mapToFriendlyError = (raw: string, statusCode?: number): string => {
+      const lower = raw.toLowerCase()
+
+      // 1. Permissão de rede do Deno
+      if (
+        lower.includes('requires net access') ||
+        lower.includes('permissiondenied') ||
+        lower.includes('network permission')
+      ) {
+        return 'A função não tem permissão de rede para chamar a API do Resend.'
+      }
+
+      // 2. Erro de restrição de envio em modo teste / domínio não verificado no Resend
+      if (
+        statusCode === 403 ||
+        lower.includes('you can only send testing emails') ||
+        lower.includes('domain not verified') ||
+        lower.includes('verify a domain') ||
+        lower.includes('only send testing emails to your own email address') ||
+        (lower.includes('validation_error') && lower.includes('domain'))
+      ) {
+        return 'O Resend bloqueou o envio: o remetente onboarding@resend.dev só permite e-mails de teste para o próprio e-mail da conta Resend. Verifique um domínio no painel do Resend e cadastre o secret RESEND_FROM_EMAIL.'
+      }
+
+      // 3. Chave de API inválida ou não autorizada
+      if (
+        statusCode === 401 ||
+        lower.includes('invalid api key') ||
+        lower.includes('unauthorized')
+      ) {
+        return 'Chave RESEND_API_KEY inválida ou não autorizada no Resend. Verifique o secret configurado no Supabase.'
+      }
+
+      // 4. Rate limit do Resend
+      if (statusCode === 429 || lower.includes('rate limit')) {
+        return 'Limite de taxa de envio excedido no Resend (rate limit). Aguarde alguns instantes antes de reenviar.'
+      }
+
+      // 5. Destinatário inválido ou ausente
+      if (lower.includes('invalid recipient') || lower.includes('to parameter')) {
+        return 'Endereço de e-mail do destinatário inválido ou ausente.'
+      }
+
+      // Fallback genérico
+      return `Falha no envio via Resend: ${raw.slice(0, 200)}`
+    }
 
     for (const item of emailDispatchPlan) {
       try {
@@ -284,7 +349,7 @@ Deno.serve(async (req: Request) => {
         `
 
         const resendPayload: any = {
-          from: `${companyName} <onboarding@resend.dev>`,
+          from: fromAddress,
           to: item.to,
           subject: item.subject,
           html: htmlBody,
@@ -305,18 +370,41 @@ Deno.serve(async (req: Request) => {
 
         if (!res.ok) {
           const errBody = await res.text()
-          console.error(`Falha Resend para ${item.to}:`, errBody)
-          deliveryResults.push({ to: item.to, status: 'failed', error: errBody })
+          console.error(`Falha Resend para ${item.to.join(', ')} (status ${res.status}):`, errBody)
+          const friendly = mapToFriendlyError(errBody, res.status)
+          deliveryResults.push({
+            to: item.to,
+            status: 'failed',
+            friendlyError: friendly,
+            rawError: errBody,
+            error: friendly,
+          })
         } else {
           deliveryResults.push({ to: item.to, status: 'sent' })
         }
       } catch (sendErr: any) {
-        console.error(`Exceção no envio para ${item.to}:`, sendErr)
-        deliveryResults.push({ to: item.to, status: 'failed', error: sendErr.message })
+        const rawErrMsg = sendErr?.message || String(sendErr)
+        console.error(`Exceção no envio para ${item.to.join(', ')}:`, sendErr)
+        const friendly = mapToFriendlyError(rawErrMsg)
+        deliveryResults.push({
+          to: item.to,
+          status: 'failed',
+          friendlyError: friendly,
+          rawError: rawErrMsg,
+          error: friendly,
+        })
       }
     }
 
     const sentCount = deliveryResults.filter((d) => d.status === 'sent').length
+    const failedDeliveries = deliveryResults.filter((d) => d.status === 'failed')
+
+    // Resumo consolidado de erros para o frontend exibir
+    const summarizedErrors = failedDeliveries.map((f) => ({
+      recipient: f.to.join(', '),
+      message: f.friendlyError || f.error || 'Falha no envio do e-mail.',
+      rawError: f.rawError,
+    }))
 
     return new Response(
       JSON.stringify({
@@ -324,6 +412,8 @@ Deno.serve(async (req: Request) => {
         message: `${sentCount} de ${emailDispatchPlan.length} relatórios foram enviados por e-mail via Resend.`,
         competenceMonth: competenceText,
         dispatchedCount: sentCount,
+        fromEmail: senderEmail,
+        errors: summarizedErrors,
         details: deliveryResults,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },

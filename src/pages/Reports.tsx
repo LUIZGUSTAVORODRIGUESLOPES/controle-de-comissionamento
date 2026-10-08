@@ -957,18 +957,51 @@ export default function Reports() {
           description: result.message,
           duration: 8000,
         })
-      } else {
-        sonnerToast.success('E-mails Disparados com Sucesso!', {
-          id: tId,
-          description: result.message || 'Extratos de comissão enviados via Resend.',
-          duration: 6000,
-        })
+        return
       }
+
+      const sentCount = result.dispatchedCount ?? 0
+      const totalCount = result.details?.length ?? 0
+      const firstError = result.errors?.[0]
+      const friendlyErrorMessage =
+        firstError?.message ||
+        result.details?.find((d) => d.status === 'failed')?.friendlyError ||
+        result.details?.find((d) => d.status === 'failed')?.error ||
+        result.message
+
+      // Caso 1: Nenhum e-mail enviado (sentCount === 0)
+      if (sentCount === 0) {
+        sonnerToast.error('Falha no Envio dos Relatórios', {
+          id: tId,
+          description: friendlyErrorMessage,
+          duration: 10000,
+        })
+        return
+      }
+
+      // Caso 2: Envio parcial (alguns enviados, outros falharam)
+      if (totalCount > 0 && sentCount < totalCount) {
+        const partialMessage = `${result.message} Motivo da falha: ${friendlyErrorMessage}`
+        sonnerToast.warning('Envio Parcial de Relatórios', {
+          id: tId,
+          description: partialMessage,
+          duration: 8000,
+        })
+        return
+      }
+
+      // Caso 3: Todos enviados com sucesso
+      sonnerToast.success('E-mails Disparados com Sucesso!', {
+        id: tId,
+        description: result.message || 'Extratos de comissão enviados via Resend.',
+        duration: 6000,
+      })
     } catch (err: any) {
       console.error('Falha ao disparar e-mails:', err)
       sonnerToast.error('Erro no envio de e-mails', {
         id: tId,
         description: err.message || 'Falha ao acionar a Edge Function.',
+        duration: 10000,
       })
     } finally {
       setDispatchingEmail(false)

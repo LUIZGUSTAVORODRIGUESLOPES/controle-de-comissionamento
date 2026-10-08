@@ -1069,17 +1069,36 @@ export async function uploadCompanyLogo(file: File): Promise<string> {
   return data.publicUrl
 }
 
-export async function sendCommissionReports(params: {
-  monthlyRunId?: string
-  userIds?: string[]
-}): Promise<{
+export interface SendCommissionReportsError {
+  recipient: string
+  message: string
+  rawError?: string
+}
+
+export interface SendCommissionReportsDetail {
+  to: string[]
+  status: 'sent' | 'failed'
+  friendlyError?: string
+  rawError?: string
+  error?: string
+}
+
+export interface SendCommissionReportsResponse {
   success: boolean
   simulated?: boolean
   message: string
+  competenceMonth?: string
   dispatchedCount?: number
+  fromEmail?: string
+  errors?: SendCommissionReportsError[]
+  details?: SendCommissionReportsDetail[]
   plan?: any[]
-  details?: any[]
-}> {
+}
+
+export async function sendCommissionReports(params: {
+  monthlyRunId?: string
+  userIds?: string[]
+}): Promise<SendCommissionReportsResponse> {
   const { data, error } = await supabase.functions.invoke('send-reports', {
     body: {
       monthly_run_id: params.monthlyRunId,
@@ -1095,5 +1114,5 @@ export async function sendCommissionReports(params: {
     throw new Error(data.error || 'Falha no processamento do disparo de e-mails.')
   }
 
-  return data
+  return data as SendCommissionReportsResponse
 }
