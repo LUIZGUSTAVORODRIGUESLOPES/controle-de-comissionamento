@@ -6,6 +6,7 @@ import {
   getBillingsForRun,
   getCommissionsForRun,
   getAllUsers,
+  getCustomers,
   deleteMonthlyRun,
 } from '@/services/commissionService'
 import { toast as sonnerToast } from 'sonner'
@@ -36,6 +37,7 @@ import {
   Lock,
   Trash2,
   Loader2,
+  Building2,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -63,6 +65,7 @@ export default function Dashboard() {
   const [billings, setBillings] = useState<Billing[]>([])
   const [commissions, setCommissions] = useState<Commission[]>([])
   const [allUsersList, setAllUsersList] = useState<AppUser[]>([])
+  const [myCustomersCount, setMyCustomersCount] = useState<number>(0)
 
   // Deletion state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -74,10 +77,15 @@ export default function Dashboard() {
   const loadDashboardData = async () => {
     setLoading(true)
     try {
-      const [runsData, usersData] = await Promise.all([getMonthlyRuns(), getAllUsers()])
+      const [runsData, usersData, customersData] = await Promise.all([
+        getMonthlyRuns(),
+        getAllUsers(),
+        getCustomers(),
+      ])
 
       setRuns(runsData)
       setAllUsersList(usersData)
+      setMyCustomersCount(customersData.length)
 
       if (runsData.length > 0) {
         const latest = runsData[0]
@@ -257,87 +265,129 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* 4 Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1: Faturamento Bruto */}
-        <Card className="border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-            <CardTitle className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Faturamento Bruto
-            </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-teal-50 text-[#0F766E] flex items-center justify-center">
-              <DollarSign className="h-4 w-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-slate-900 tabular-nums">
-              {formatBRL(grossTotal || Number(selectedRun?.gross_company_billing) || 0)}
-            </div>
-            <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-              <TrendingUp className="h-3 w-3 text-emerald-600" />
-              <span>Base total declarada no mês</span>
-            </p>
-          </CardContent>
-        </Card>
+      {/* Stat Cards: For sales, display 'Minhas Comissões' and 'Meus Clientes' only; for admin/manager, display full corporate view */}
+      {isSales ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Card 1: Minhas Comissões */}
+          <Card className="border-slate-200 shadow-sm hover:shadow-md transition-shadow bg-gradient-to-br from-white to-teal-50/40">
+            <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+              <CardTitle className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Minhas Comissões
+              </CardTitle>
+              <div className="h-8 w-8 rounded-lg bg-[#0F766E] text-white flex items-center justify-center">
+                <DollarSign className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-[#0F766E] tabular-nums">
+                {formatBRL(myCommissions)}
+              </div>
+              <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                <TrendingUp className="h-3 w-3 text-emerald-600" />
+                <span>Seu ganho variável referente ao mês apurado</span>
+              </p>
+            </CardContent>
+          </Card>
 
-        {/* Card 2: Impostos Retidos */}
-        <Card className="border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-            <CardTitle className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Impostos Retidos
-            </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
-              <Receipt className="h-4 w-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-slate-900 tabular-nums">
-              {formatBRL(taxesRetained)}
-            </div>
-            <p className="text-xs text-slate-500 mt-1">Deduções fiscais dinâmicas (fórmula/%)</p>
-          </CardContent>
-        </Card>
+          {/* Card 2: Meus Clientes */}
+          <Card className="border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+            <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+              <CardTitle className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Meus Clientes
+              </CardTitle>
+              <div className="h-8 w-8 rounded-lg bg-teal-50 text-[#0F766E] flex items-center justify-center">
+                <Building2 className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                {myCustomersCount}
+              </div>
+              <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                <Users className="h-3 w-3 text-[#0F766E]" />
+                <span>Clientes vinculados à sua carteira</span>
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Card 1: Faturamento Bruto */}
+          <Card className="border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+            <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+              <CardTitle className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Faturamento Bruto
+              </CardTitle>
+              <div className="h-8 w-8 rounded-lg bg-teal-50 text-[#0F766E] flex items-center justify-center">
+                <DollarSign className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                {formatBRL(grossTotal || Number(selectedRun?.gross_company_billing) || 0)}
+              </div>
+              <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                <TrendingUp className="h-3 w-3 text-emerald-600" />
+                <span>Base total declarada no mês</span>
+              </p>
+            </CardContent>
+          </Card>
 
-        {/* Card 3: Comissões Geradas */}
-        <Card className="border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-            <CardTitle className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Comissões Geradas
-            </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
-              <TrendingUp className="h-4 w-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-slate-900 tabular-nums">
-              {formatBRL(totalCommissions)}
-            </div>
-            <p className="text-xs text-slate-500 mt-1">Incidindo sobre o faturamento líquido</p>
-          </CardContent>
-        </Card>
+          {/* Card 2: Impostos Retidos */}
+          <Card className="border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+            <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+              <CardTitle className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Impostos Retidos
+              </CardTitle>
+              <div className="h-8 w-8 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
+                <Receipt className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                {formatBRL(taxesRetained)}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Deduções fiscais dinâmicas (fórmula/%)</p>
+            </CardContent>
+          </Card>
 
-        {/* Card 4: Total a Pagar (admin/manager) OR Minhas Comissões (sales) */}
-        <Card className="border-slate-200 shadow-sm hover:shadow-md transition-shadow bg-gradient-to-br from-white to-teal-50/40">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-            <CardTitle className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              {isSales ? 'Minhas Comissões' : 'Total a Pagar (Folha)'}
-            </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-[#0F766E] text-white flex items-center justify-center">
-              <Users className="h-4 w-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-[#0F766E] tabular-nums">
-              {formatBRL(isSales ? myCommissions : totalToPayCompany)}
-            </div>
-            <p className="text-xs text-slate-500 mt-1">
-              {isSales
-                ? 'Seu ganho variável referente ao mês'
-                : 'Salários fixos + comissões da equipe'}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+          {/* Card 3: Comissões Geradas */}
+          <Card className="border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+            <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+              <CardTitle className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Comissões Geradas
+              </CardTitle>
+              <div className="h-8 w-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
+                <TrendingUp className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                {formatBRL(totalCommissions)}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Incidindo sobre o faturamento líquido</p>
+            </CardContent>
+          </Card>
+
+          {/* Card 4: Total a Pagar (admin/manager) */}
+          <Card className="border-slate-200 shadow-sm hover:shadow-md transition-shadow bg-gradient-to-br from-white to-teal-50/40">
+            <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+              <CardTitle className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Total a Pagar (Folha)
+              </CardTitle>
+              <div className="h-8 w-8 rounded-lg bg-[#0F766E] text-white flex items-center justify-center">
+                <Users className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-[#0F766E] tabular-nums">
+                {formatBRL(totalToPayCompany)}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Salários fixos + comissões da equipe</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Monthly Chart Section */}
       <Card className="border-slate-200 shadow-sm">
@@ -447,7 +497,7 @@ export default function Dashboard() {
               <thead>
                 <tr className="border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50/50">
                   <th className="py-3 px-4">Mês/Ano</th>
-                  <th className="py-3 px-4">Faturamento Bruto Declarado</th>
+                  {!isSales && <th className="py-3 px-4">Faturamento Bruto Declarado</th>}
                   <th className="py-3 px-4">Status do Fechamento</th>
                   <th className="py-3 px-4 text-right">Ação</th>
                 </tr>
@@ -467,9 +517,11 @@ export default function Dashboard() {
                         <td className="py-3.5 px-4 font-semibold text-slate-800">
                           {formatMonth(r.month_year)}
                         </td>
-                        <td className="py-3.5 px-4 tabular-nums text-slate-700">
-                          {formatBRL(Number(r.gross_company_billing))}
-                        </td>
+                        {!isSales && (
+                          <td className="py-3.5 px-4 tabular-nums text-slate-700">
+                            {formatBRL(Number(r.gross_company_billing))}
+                          </td>
+                        )}
                         <td className="py-3.5 px-4">
                           {isPending ? (
                             <Badge className="bg-amber-100 text-amber-800 border-amber-300 font-semibold gap-1">

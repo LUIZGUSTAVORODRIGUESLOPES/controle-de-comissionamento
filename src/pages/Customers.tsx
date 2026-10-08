@@ -14,6 +14,7 @@ import {
 import type { CommissionProfile } from '@/types/database'
 import type { Customer, CustomerOrigin, AppUser } from '@/types/database'
 import { useToast } from '@/hooks/use-toast'
+import { useAuth } from '@/hooks/use-auth'
 import {
   Search,
   Building2,
@@ -85,6 +86,8 @@ import { ptBR } from 'date-fns/locale'
 
 export default function Customers() {
   const { toast } = useToast()
+  const { appUser } = useAuth()
+  const isSales = appUser?.role === 'sales'
 
   // Main state
   const [loading, setLoading] = useState(true)
@@ -613,12 +616,15 @@ export default function Customers() {
               <Building2 className="h-5 w-5" />
             </div>
             <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
-              Gestão de Clientes (Customer Management)
+              {isSales
+                ? 'Meus Clientes (Minha Carteira)'
+                : 'Gestão de Clientes (Customer Management)'}
             </h2>
           </div>
           <p className="text-sm text-slate-500">
-            Gerencie os dados cadastrais, regras de comissão (origem, data de início) e atribua
-            executivos de vendas responsáveis.
+            {isSales
+              ? 'Consulte os clientes sob sua responsabilidade comercial vinculados à sua carteira (Somente Leitura).'
+              : 'Gerencie os dados cadastrais, regras de comissão (origem, data de início) e atribua executivos de vendas responsáveis.'}
           </p>
         </div>
 
@@ -669,8 +675,8 @@ export default function Customers() {
         </CardContent>
       </Card>
 
-      {/* Bulk Actions Floating Bar / Toolbar */}
-      {selectedCustomerIds.length > 0 && (
+      {/* Bulk Actions Floating Bar / Toolbar (Oculto para sales) */}
+      {!isSales && selectedCustomerIds.length > 0 && (
         <div className="sticky top-4 z-20 flex flex-col sm:flex-row items-center justify-between gap-3 p-4 bg-slate-900 text-white rounded-xl shadow-lg border border-slate-800 animate-in fade-in slide-in-from-top-2 duration-200">
           <div className="flex items-center gap-3">
             <div className="h-8 w-8 rounded-lg bg-[#0F766E] flex items-center justify-center font-bold text-white text-xs shrink-0">
@@ -714,14 +720,17 @@ export default function Customers() {
         <CardHeader className="py-4 px-6 border-b border-slate-100 flex flex-row items-center justify-between">
           <div>
             <CardTitle className="text-base font-bold text-slate-900">
-              Clientes Cadastrados ({filteredCustomers.length})
+              {isSales
+                ? `Minha Carteira de Clientes (${filteredCustomers.length})`
+                : `Clientes Cadastrados (${filteredCustomers.length})`}
             </CardTitle>
             <CardDescription className="text-xs text-slate-500">
-              Selecione múltiplos clientes para editar em massa ou clique na linha para abrir os
-              detalhes individuais.
+              {isSales
+                ? 'Lista de clientes que geram comissões para o seu perfil comercial.'
+                : 'Selecione múltiplos clientes para editar em massa ou clique na linha para abrir os detalhes individuais.'}
             </CardDescription>
           </div>
-          {selectedCustomerIds.length > 0 && (
+          {!isSales && selectedCustomerIds.length > 0 && (
             <Button
               size="sm"
               onClick={handleOpenBulkModal}
@@ -737,21 +746,29 @@ export default function Customers() {
             <Table>
               <TableHeader className="bg-slate-50/70">
                 <TableRow>
-                  <TableHead className="w-12 px-3 text-center">
-                    <Checkbox
-                      checked={
-                        allFilteredSelected ? true : someFilteredSelected ? 'indeterminate' : false
-                      }
-                      onCheckedChange={handleToggleSelectAll}
-                      aria-label="Selecionar todos os clientes visíveis"
-                      className="translate-y-[2px]"
-                    />
-                  </TableHead>
+                  {!isSales && (
+                    <TableHead className="w-12 px-3 text-center">
+                      <Checkbox
+                        checked={
+                          allFilteredSelected
+                            ? true
+                            : someFilteredSelected
+                              ? 'indeterminate'
+                              : false
+                        }
+                        onCheckedChange={handleToggleSelectAll}
+                        aria-label="Selecionar todos os clientes visíveis"
+                        className="translate-y-[2px]"
+                      />
+                    </TableHead>
+                  )}
                   <TableHead className="w-32 font-bold text-slate-600">ID / Código</TableHead>
                   <TableHead className="font-bold text-slate-600">Nome do Cliente</TableHead>
                   <TableHead className="w-36 font-bold text-slate-600">Origem</TableHead>
                   <TableHead className="w-40 font-bold text-slate-600">Data de Início</TableHead>
-                  <TableHead className="font-bold text-slate-600">Vendedores Vinculados</TableHead>
+                  <TableHead className="font-bold text-slate-600">
+                    {isSales ? 'Vínculo Comercial' : 'Vendedores Vinculados'}
+                  </TableHead>
                   <TableHead className="w-32 font-bold text-slate-600">Comissão</TableHead>
                   <TableHead className="w-20 text-right font-bold text-slate-600">Ação</TableHead>
                 </TableRow>
@@ -794,21 +811,23 @@ export default function Customers() {
                           isSelected ? 'bg-teal-50/80 hover:bg-teal-100/60' : 'hover:bg-slate-50'
                         }`}
                       >
-                        <TableCell
-                          className="w-12 px-3 text-center"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                          }}
-                        >
-                          <Checkbox
-                            checked={isSelected}
-                            onCheckedChange={(checked) =>
-                              handleToggleCustomerSelect(cust.id, checked)
-                            }
-                            aria-label={`Selecionar cliente ${cust.name}`}
-                            className="translate-y-[2px]"
-                          />
-                        </TableCell>
+                        {!isSales && (
+                          <TableCell
+                            className="w-12 px-3 text-center"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                            }}
+                          >
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={(checked) =>
+                                handleToggleCustomerSelect(cust.id, checked)
+                              }
+                              aria-label={`Selecionar cliente ${cust.name}`}
+                              className="translate-y-[2px]"
+                            />
+                          </TableCell>
+                        )}
                         <TableCell
                           onClick={() => handleOpenCustomer(cust)}
                           className="font-mono font-semibold text-xs text-slate-800"
@@ -897,15 +916,17 @@ export default function Customers() {
                             >
                               <ExternalLink className="h-4 w-4" />
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setCustomerToDeactivate(cust)}
-                              className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                              title="Inativar cliente (Soft Delete)"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                            {!isSales && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setCustomerToDeactivate(cust)}
+                                className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                                title="Inativar cliente (Soft Delete)"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -931,8 +952,9 @@ export default function Customers() {
               </SheetTitle>
             </div>
             <SheetDescription className="text-xs text-slate-500">
-              Edite as informações cadastrais e vincule os executivos comerciais e gerentes
-              responsáveis.
+              {isSales
+                ? 'Visualização dos dados cadastrais e vigência comercial do cliente em sua carteira (Somente Leitura).'
+                : 'Edite as informações cadastrais e vincule os executivos comerciais e gerentes responsáveis.'}
             </SheetDescription>
           </SheetHeader>
 
@@ -959,8 +981,9 @@ export default function Customers() {
                 id="cust_name"
                 value={formName}
                 onChange={(e) => setFormName(e.target.value)}
+                disabled={isSales}
                 placeholder="Razão social ou nome fantasia"
-                className="h-10 text-sm border-slate-300"
+                className="h-10 text-sm border-slate-300 disabled:opacity-80 disabled:bg-slate-50"
               />
             </div>
 
@@ -976,9 +999,13 @@ export default function Customers() {
               </div>
               <Select
                 value={formOrigin}
+                disabled={isSales}
                 onValueChange={(val: CustomerOrigin) => setFormOrigin(val)}
               >
-                <SelectTrigger id="cust_origin" className="h-10 border-slate-300">
+                <SelectTrigger
+                  id="cust_origin"
+                  className="h-10 border-slate-300 disabled:opacity-80 disabled:bg-slate-50"
+                >
                   <SelectValue placeholder="Selecione a origem" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1007,34 +1034,37 @@ export default function Customers() {
                 <Input
                   id="cust_start_date"
                   type="date"
+                  disabled={isSales}
                   value={formStartDate}
                   onChange={(e) => setFormStartDate(e.target.value)}
-                  className="h-10 flex-1 font-mono text-sm border-slate-300"
+                  className="h-10 flex-1 font-mono text-sm border-slate-300 disabled:opacity-80 disabled:bg-slate-50"
                 />
 
                 {/* Optional Popover Calendar */}
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      className="h-10 w-10 shrink-0 border-slate-300 text-slate-600 hover:text-slate-900"
-                      title="Abrir calendário"
-                    >
-                      <CalendarIcon className="h-4 w-4" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="end">
-                    <Calendar
-                      mode="single"
-                      selected={calendarSelectedDate}
-                      onSelect={handleSelectDateFromCalendar}
-                      defaultMonth={calendarSelectedDate || new Date()}
-                      initialFocus
-                      locale={ptBR}
-                    />
-                  </PopoverContent>
-                </Popover>
+                {!isSales && (
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-10 w-10 shrink-0 border-slate-300 text-slate-600 hover:text-slate-900"
+                        title="Abrir calendário"
+                      >
+                        <CalendarIcon className="h-4 w-4" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="end">
+                      <Calendar
+                        mode="single"
+                        selected={calendarSelectedDate}
+                        onSelect={handleSelectDateFromCalendar}
+                        defaultMonth={calendarSelectedDate || new Date()}
+                        initialFocus
+                        locale={ptBR}
+                      />
+                    </PopoverContent>
+                  </Popover>
+                )}
               </div>
 
               <p className="text-[11px] text-slate-500 leading-relaxed">
@@ -1059,44 +1089,54 @@ export default function Customers() {
               </div>
               <Switch
                 id="cust_no_comm"
+                disabled={isSales}
                 checked={formNoCommission}
                 onCheckedChange={setFormNoCommission}
               />
             </div>
 
-            {/* Botões Salvar e Inativar Cliente */}
+            {/* Botões Salvar e Inativar Cliente - Ocultos para sales (Read-Only) */}
             <div className="pt-2 flex items-center justify-between gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  if (selectedCustomer) {
-                    setCustomerToDeactivate(selectedCustomer)
-                  }
-                }}
-                className="border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700 text-xs h-9 px-3 gap-1.5"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                <span>Inativar Cliente</span>
-              </Button>
-              <Button
-                onClick={handleSaveChanges}
-                disabled={savingChanges}
-                className="bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold text-xs h-9 px-4 gap-2 shadow-xs"
-              >
-                {savingChanges ? (
-                  <>
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                    <span>Salvando...</span>
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    <span>Salvar Alterações do Cliente</span>
-                  </>
-                )}
-              </Button>
+              {isSales ? (
+                <div className="w-full p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-center text-xs text-slate-500 font-medium">
+                  🔒 Modo Somente Leitura: Usuários da equipe de vendas não possuem permissão para
+                  alterar cadastros ou regras de clientes.
+                </div>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (selectedCustomer) {
+                        setCustomerToDeactivate(selectedCustomer)
+                      }
+                    }}
+                    className="border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700 text-xs h-9 px-3 gap-1.5"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Inativar Cliente</span>
+                  </Button>
+                  <Button
+                    onClick={handleSaveChanges}
+                    disabled={savingChanges}
+                    className="bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold text-xs h-9 px-4 gap-2 shadow-xs"
+                  >
+                    {savingChanges ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        <span>Salvando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        <span>Salvar Alterações do Cliente</span>
+                      </>
+                    )}
+                  </Button>
+                </>
+              )}
             </div>
           </div>
 
@@ -1200,20 +1240,22 @@ export default function Customers() {
                               ? ` até ${formatDateDisplay(link.valid_until)}`
                               : ' em diante'}
                           </Badge>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            disabled={isRemoving}
-                            onClick={() => handleRemoveUser(link.id, u?.name)}
-                            className="h-8 w-8 text-rose-500 hover:text-rose-700 hover:bg-rose-50"
-                            title="Remover vínculo"
-                          >
-                            {isRemoving ? (
-                              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <Trash2 className="h-4 w-4" />
-                            )}
-                          </Button>
+                          {!isSales && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              disabled={isRemoving}
+                              onClick={() => handleRemoveUser(link.id, u?.name)}
+                              className="h-8 w-8 text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                              title="Remover vínculo"
+                            >
+                              {isRemoving ? (
+                                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                            </Button>
+                          )}
                         </div>
                       </div>
                     )
@@ -1222,171 +1264,175 @@ export default function Customers() {
               )}
             </div>
 
-            {/* Form to Add New User Link */}
-            <div className="pt-3 border-t border-slate-100 space-y-3">
-              <Label className="text-xs font-semibold text-slate-700">
-                Vincular Novo Vendedor ou Gerente com Regra e Vigência
-              </Label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-[11px] text-slate-500">Usuário</Label>
-                  <Select
-                    value={selectedUserIdToAdd}
-                    onValueChange={setSelectedUserIdToAdd}
-                    disabled={addingUser || unlinkedEligibleUsers.length === 0}
-                  >
-                    <SelectTrigger className="w-full h-10 border-slate-300 text-xs mt-1">
-                      <SelectValue
-                        placeholder={
-                          unlinkedEligibleUsers.length === 0
-                            ? 'Todos já vinculados'
-                            : 'Selecione o usuário...'
-                        }
-                      />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {unlinkedEligibleUsers.map((user) => (
-                        <SelectItem key={user.id} value={user.id} className="text-xs">
-                          {user.name} ({user.role === 'manager' ? 'Gerente' : 'Vendedor'})
+            {/* Form to Add New User Link (Oculto para sales) */}
+            {!isSales && (
+              <div className="pt-3 border-t border-slate-100 space-y-3">
+                <Label className="text-xs font-semibold text-slate-700">
+                  Vincular Novo Vendedor ou Gerente com Regra e Vigência
+                </Label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-[11px] text-slate-500">Usuário</Label>
+                    <Select
+                      value={selectedUserIdToAdd}
+                      onValueChange={setSelectedUserIdToAdd}
+                      disabled={addingUser || unlinkedEligibleUsers.length === 0}
+                    >
+                      <SelectTrigger className="w-full h-10 border-slate-300 text-xs mt-1">
+                        <SelectValue
+                          placeholder={
+                            unlinkedEligibleUsers.length === 0
+                              ? 'Todos já vinculados'
+                              : 'Selecione o usuário...'
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {unlinkedEligibleUsers.map((user) => (
+                          <SelectItem key={user.id} value={user.id} className="text-xs">
+                            {user.name} ({user.role === 'manager' ? 'Gerente' : 'Vendedor'})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label className="text-[11px] text-slate-500">Regra de Comissão</Label>
+                    <Select
+                      value={selectedRuleToAdd}
+                      onValueChange={setSelectedRuleToAdd}
+                      disabled={addingUser || !selectedUserIdToAdd}
+                    >
+                      <SelectTrigger className="w-full h-10 border-slate-300 text-xs mt-1">
+                        <SelectValue placeholder="Regra..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="inbound" className="text-xs">
+                          Inbound
                         </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                        <SelectItem value="outbound" className="text-xs">
+                          Outbound
+                        </SelectItem>
+                        <SelectItem value="fixed" className="text-xs">
+                          Fixo
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
 
-                <div>
-                  <Label className="text-[11px] text-slate-500">Regra de Comissão</Label>
-                  <Select
-                    value={selectedRuleToAdd}
-                    onValueChange={setSelectedRuleToAdd}
-                    disabled={addingUser || !selectedUserIdToAdd}
+                {/* DatePicker Obrigatório de Vigência: Vigente a partir de: */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  <div className="space-y-1">
+                    <Label className="text-xs font-medium text-slate-700 flex items-center gap-1">
+                      <span>Vigente a partir de:</span>
+                      <span className="text-rose-500">*</span>
+                    </Label>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="date"
+                        value={selectedValidFromToAdd}
+                        onChange={(e) => setSelectedValidFromToAdd(e.target.value)}
+                        required
+                        className="h-10 text-xs border-slate-300 focus-visible:ring-[#0F766E]"
+                      />
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-10 w-10 border-slate-300 shrink-0 text-slate-600 hover:text-[#0F766E]"
+                            title="Selecionar data no calendário"
+                          >
+                            <CalendarIcon className="h-4 w-4" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={
+                              selectedValidFromToAdd ? parseISO(selectedValidFromToAdd) : undefined
+                            }
+                            onSelect={(d) => {
+                              if (d) {
+                                const y = d.getFullYear()
+                                const m = String(d.getMonth() + 1).padStart(2, '0')
+                                const day = String(d.getDate()).padStart(2, '0')
+                                setSelectedValidFromToAdd(`${y}-${m}-${day}`)
+                              }
+                            }}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs font-medium text-slate-700 flex items-center justify-between">
+                      <span>Vigente até:</span>
+                      <span className="text-[10px] text-slate-400 font-normal">Opcional</span>
+                    </Label>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="date"
+                        value={selectedValidUntilToAdd}
+                        onChange={(e) => setSelectedValidUntilToAdd(e.target.value)}
+                        placeholder="Indeterminado"
+                        className="h-10 text-xs border-slate-300 focus-visible:ring-[#0F766E]"
+                      />
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-10 w-10 border-slate-300 shrink-0 text-slate-600 hover:text-[#0F766E]"
+                            title="Selecionar data final no calendário"
+                          >
+                            <CalendarIcon className="h-4 w-4" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={
+                              selectedValidUntilToAdd
+                                ? parseISO(selectedValidUntilToAdd)
+                                : undefined
+                            }
+                            onSelect={(d) => {
+                              if (d) {
+                                const y = d.getFullYear()
+                                const m = String(d.getMonth() + 1).padStart(2, '0')
+                                const day = String(d.getDate()).padStart(2, '0')
+                                setSelectedValidUntilToAdd(`${y}-${m}-${day}`)
+                              }
+                            }}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <Button
+                    onClick={handleAddUser}
+                    disabled={!selectedUserIdToAdd || !selectedValidFromToAdd || addingUser}
+                    className="bg-[#0F766E] hover:bg-[#115E59] text-white text-xs font-semibold h-10 px-5 gap-1.5"
                   >
-                    <SelectTrigger className="w-full h-10 border-slate-300 text-xs mt-1">
-                      <SelectValue placeholder="Regra..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="inbound" className="text-xs">
-                        Inbound
-                      </SelectItem>
-                      <SelectItem value="outbound" className="text-xs">
-                        Outbound
-                      </SelectItem>
-                      <SelectItem value="fixed" className="text-xs">
-                        Fixo
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
+                    {addingUser ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <UserPlus className="h-3.5 w-3.5" />
+                    )}
+                    <span>Vincular Vendedor</span>
+                  </Button>
                 </div>
               </div>
-
-              {/* DatePicker Obrigatório de Vigência: Vigente a partir de: */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                <div className="space-y-1">
-                  <Label className="text-xs font-medium text-slate-700 flex items-center gap-1">
-                    <span>Vigente a partir de:</span>
-                    <span className="text-rose-500">*</span>
-                  </Label>
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      type="date"
-                      value={selectedValidFromToAdd}
-                      onChange={(e) => setSelectedValidFromToAdd(e.target.value)}
-                      required
-                      className="h-10 text-xs border-slate-300 focus-visible:ring-[#0F766E]"
-                    />
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className="h-10 w-10 border-slate-300 shrink-0 text-slate-600 hover:text-[#0F766E]"
-                          title="Selecionar data no calendário"
-                        >
-                          <CalendarIcon className="h-4 w-4" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-auto p-0" align="start">
-                        <Calendar
-                          mode="single"
-                          selected={
-                            selectedValidFromToAdd ? parseISO(selectedValidFromToAdd) : undefined
-                          }
-                          onSelect={(d) => {
-                            if (d) {
-                              const y = d.getFullYear()
-                              const m = String(d.getMonth() + 1).padStart(2, '0')
-                              const day = String(d.getDate()).padStart(2, '0')
-                              setSelectedValidFromToAdd(`${y}-${m}-${day}`)
-                            }
-                          }}
-                          initialFocus
-                        />
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <Label className="text-xs font-medium text-slate-700 flex items-center justify-between">
-                    <span>Vigente até:</span>
-                    <span className="text-[10px] text-slate-400 font-normal">Opcional</span>
-                  </Label>
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      type="date"
-                      value={selectedValidUntilToAdd}
-                      onChange={(e) => setSelectedValidUntilToAdd(e.target.value)}
-                      placeholder="Indeterminado"
-                      className="h-10 text-xs border-slate-300 focus-visible:ring-[#0F766E]"
-                    />
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className="h-10 w-10 border-slate-300 shrink-0 text-slate-600 hover:text-[#0F766E]"
-                          title="Selecionar data final no calendário"
-                        >
-                          <CalendarIcon className="h-4 w-4" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-auto p-0" align="start">
-                        <Calendar
-                          mode="single"
-                          selected={
-                            selectedValidUntilToAdd ? parseISO(selectedValidUntilToAdd) : undefined
-                          }
-                          onSelect={(d) => {
-                            if (d) {
-                              const y = d.getFullYear()
-                              const m = String(d.getMonth() + 1).padStart(2, '0')
-                              const day = String(d.getDate()).padStart(2, '0')
-                              setSelectedValidUntilToAdd(`${y}-${m}-${day}`)
-                            }
-                          }}
-                          initialFocus
-                        />
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex justify-end pt-2">
-                <Button
-                  onClick={handleAddUser}
-                  disabled={!selectedUserIdToAdd || !selectedValidFromToAdd || addingUser}
-                  className="bg-[#0F766E] hover:bg-[#115E59] text-white text-xs font-semibold h-10 px-5 gap-1.5"
-                >
-                  {addingUser ? (
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <UserPlus className="h-3.5 w-3.5" />
-                  )}
-                  <span>Vincular Vendedor</span>
-                </Button>
-              </div>
-            </div>
+            )}
           </div>
         </SheetContent>
       </Sheet>

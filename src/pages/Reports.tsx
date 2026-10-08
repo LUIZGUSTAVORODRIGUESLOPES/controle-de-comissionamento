@@ -1437,7 +1437,9 @@ export default function Reports() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div
+            className={`grid grid-cols-1 md:grid-cols-2 ${isSales ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-4`}
+          >
             {/* 1. Modo de Seleção de Tempo (Mês vs Período) */}
             <div className="space-y-1.5">
               <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
@@ -1572,25 +1574,21 @@ export default function Reports() {
               </div>
             )}
 
-            {/* 3. Usuários / Vendedores (Multi-select via Popover / Dropdown) */}
-            <div className="space-y-1.5">
-              <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center justify-between">
-                <span>Vendedores / Usuários</span>
-                {selectedUserIds.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedUserIds([])}
-                    className="text-[10px] text-teal-700 hover:underline capitalize"
-                  >
-                    Limpar ({selectedUserIds.length})
-                  </button>
-                )}
-              </Label>
-              {isSales ? (
-                <div className="h-10 px-3 bg-slate-100 rounded-md border border-slate-200 flex items-center text-xs text-slate-700 font-semibold">
-                  {appUser?.name} (Você)
-                </div>
-              ) : (
+            {/* 3. Usuários / Vendedores (Multi-select via Popover / Dropdown) - Oculto para sales */}
+            {!isSales && (
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center justify-between">
+                  <span>Vendedores / Usuários</span>
+                  {selectedUserIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedUserIds([])}
+                      className="text-[10px] text-teal-700 hover:underline capitalize"
+                    >
+                      Limpar ({selectedUserIds.length})
+                    </button>
+                  )}
+                </Label>
                 <Popover>
                   <PopoverTrigger asChild>
                     <Button
@@ -1649,8 +1647,8 @@ export default function Reports() {
                     </div>
                   </PopoverContent>
                 </Popover>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* 4. Origem do Cliente (Select: Todos, Inbound, Outbound) */}
             <div className="space-y-1.5">
